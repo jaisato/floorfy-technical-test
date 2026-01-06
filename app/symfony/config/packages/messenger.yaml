@@ -1,0 +1,22 @@
+framework:
+    messenger:
+        default_bus: messenger.bus.command
+
+        buses:
+            messenger.bus.command:
+                default_middleware: true
+            messenger.bus.query:
+                default_middleware: true
+
+        transports:
+            async:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                retry_strategy:
+                    max_retries: 20
+                    delay: 10000
+                    multiplier: 2
+                    max_delay: 600000
+
+        routing:
+            App\Animation\Application\Command\TrackAnimationStatusCommand: async
+            App\Composition\Application\Command\ComposeFinalVideoCommand: async

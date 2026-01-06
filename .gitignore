@@ -1,0 +1,23 @@
+# deps
+/vendor/
+node_modules/
+
+# env / secrets
+.env
+.env.local
+.env.*.local
+
+# cache/logs
+**/var/cache/
+**/var/log/
+
+# tests
+.phpunit.result.cache
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
