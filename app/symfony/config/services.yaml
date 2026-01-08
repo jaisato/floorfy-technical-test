@@ -29,12 +29,6 @@ services:
 
     App\Composition\Domain\Port\VideoComposer: '@App\Infrastructure\Composition\Ffmpeg\FfmpegVideoComposer'
 
-    # Local storage
-    App\Infrastructure\Animation\Storage\LocalObjectStorage:
-        arguments:
-            $storageDir: '%app.storage_dir%'
-            $publicBaseUrl: '%app.public_base_url%'
-
     App\Infrastructure\Composition\Ffmpeg\FfmpegVideoComposer:
         arguments:
             $workDir: '%app.ffmpeg_work_dir%'
