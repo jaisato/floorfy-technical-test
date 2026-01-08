@@ -12,16 +12,9 @@ doctrine:
                 auto_mapping: false
 
                 mappings:
-                    Animation:
+                    Task:
                         is_bundle: false
                         type: attribute
-                        dir: '%kernel.project_dir%/src/Animation/Infrastructure/Persistence/Doctrine/Entity'
-                        prefix: 'App\Animation\Infrastructure\Persistence\Doctrine\Entity'
-                        alias: Animation
-
-                    Composition:
-                        is_bundle: false
-                        type: attribute
-                        dir: '%kernel.project_dir%/src/Composition/Infrastructure/Persistence/Doctrine/Entity'
-                        prefix: 'App\Composition\Infrastructure\Persistence\Doctrine\Entity'
-                        alias: Composition
+                        dir: '%kernel.project_dir%/src/Task/Infrastructure/Persistence/Doctrine/Entity'
+                        prefix: 'App\Task\Infrastructure\Persistence\Doctrine\Entity'
+                        alias: Task

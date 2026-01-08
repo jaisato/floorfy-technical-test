@@ -18,5 +18,4 @@ framework:
                     max_delay: 600000
 
         routing:
-            App\Animation\Application\Command\TrackAnimationStatusCommand: async
-            App\Composition\Application\Command\ComposeFinalVideoCommand: async
+            App\Task\Application\Command\ProcessVideoTaskCommand: async

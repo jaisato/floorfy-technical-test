@@ -15,14 +15,11 @@ services:
 
             string $storageDir: '%kernel.project_dir%/public/storage'
             string $publicBaseUrl: '%env(resolve:BASE_PUBLIC_URL)%/storage'
+            string $appUrl: '%env(resolve:APP_URL)%'
 
     Google\Cloud\Storage\StorageClient:
         arguments:
             - { projectId: '%env(GCP_PROJECT_ID)%', keyFilePath: '%env(resolve:GOOGLE_APPLICATION_CREDENTIALS)%' }
-
-    App\Infrastructure\Animation\Veo\GcsStorage:
-        arguments:
-            $bucketName: '%env(GCP_GCS_BUCKET)%'
 
     App\:
         resource: '../src/'
@@ -42,19 +39,5 @@ services:
         arguments:
             $workDir: '%app.ffmpeg_work_dir%'
 
-    # GCP token provider (ADC JSON)
-    App\Shared\Infrastructure\Google\GoogleAccessTokenProvider: ~
-
-    App\Animation\Domain\Port\AnimationJobRepository: '@App\Animation\Infrastructure\Persistence\Doctrine\Repository\DoctrineAnimationJobRepository'
-    App\Composition\Domain\Port\CompositionJobRepository: '@App\Composition\Infrastructure\Persistence\Doctrine\Repository\DoctrineCompositionJobRepository'
-
-    App\Animation\Domain\Port\VeoAnimator: '@App\Infrastructure\Animation\Veo\GoogleVeoHttpAnimator'
-    App\Animation\Domain\Port\ObjectStorage: '@App\Infrastructure\Animation\Storage\LocalObjectStorage'
-
-    # Google Veo config
-    App\Infrastructure\Animation\Veo\GoogleVeoConfig:
-        arguments:
-            $projectId: '%env(GCP_PROJECT_ID)%'
-            $location: '%env(GCP_VERTEX_LOCATION)%'
-            $modelId: '%env(GCP_VEO_MODEL_ID)%'
-            $gcsBucket: '%env(GCP_GCS_BUCKET)%'
+    App\Task\Domain\Port\VideoTaskRepository: '@App\Task\Infrastructure\Persistence\Doctrine\Repository\DoctrineVideoTaskRepository'
+    App\Task\Domain\Port\PartialVideoRepository: '@App\Task\Infrastructure\Persistence\Doctrine\Repository\DoctrinePartialVideoRepository'

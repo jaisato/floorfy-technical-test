@@ -25,7 +25,6 @@ final class FfmpegVideoComposer implements VideoComposer
             $localFiles[] = $dst;
         }
 
-        // concat demuxer: requiere lista
         $listFile = rtrim($this->workDir, '/')."/{$outputBasename}_list.txt";
         $content = '';
         foreach ($localFiles as $file) {
