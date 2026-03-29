@@ -5,6 +5,7 @@ node_modules/
 # env / secrets
 .env
 .env.local
+.env.dev
 .env.*.local
 
 # cache/logs
@@ -21,5 +22,4 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
-secrets/gcp-sa.json
 secrets/gcp-sa.json
