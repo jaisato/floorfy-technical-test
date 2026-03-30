@@ -6,6 +6,8 @@ node_modules/
 .env
 .env.local
 .env.*.local
+.env.dev
+.env.test
 
 # cache/logs
 **/var/cache/
@@ -21,5 +23,4 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
-secrets/gcp-sa.json
 secrets/gcp-sa.json

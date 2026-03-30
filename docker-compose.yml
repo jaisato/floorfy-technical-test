@@ -17,9 +17,9 @@ services:
       dockerfile: Dockerfile
     environment:
       APP_ENV: dev
-      DATABASE_URL: "mysql://app:app@mysql:3306/app?serverVersion=8.0"
-      MESSENGER_TRANSPORT_DSN: "amqp://guest:guest@rabbitmq:5672/%2f/messages"
-      MESSENGER_FAILURE_TRANSPORT_DSN: "amqp://guest:guest@rabbitmq:5672/%2f/failed"
+      DATABASE_URL: "mysql://${DB_USER:-app}:${DB_PASSWORD:?Set DB_PASSWORD in .env}@mysql:3306/${DB_NAME:-app}?serverVersion=8.0"
+      MESSENGER_TRANSPORT_DSN: "amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672/%2f/messages"
+      MESSENGER_FAILURE_TRANSPORT_DSN: "amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672/%2f/failed"
       BASE_PUBLIC_URL: "http://localhost:8080"
       WORK_DIR: "/var/www/html/var/work"
       VEO_LOCATION: "europe-west4"
@@ -28,9 +28,9 @@ services:
       VEO_OUTPUT_GCS: "gs://floorfy-veo-storage/veo-output/"
       ANIMATOR_DRIVER: "veo"
       GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp-sa.json
-      GCP_PROJECT_ID: floorfy-test-483313
-      GCP_VERTEX_LOCATION: us-central1
-      GCP_GCS_BUCKET: floorfy-veo-storage
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-}
+      GCP_VERTEX_LOCATION: ${GCP_VERTEX_LOCATION:-us-central1}
+      GCP_GCS_BUCKET: ${GCP_GCS_BUCKET:-}
       COMPOSER_HOME: /tmp/composer
     entrypoint: ["/bin/sh", "/var/www/docker/entrypoint-php.sh"]
     secrets:
@@ -53,15 +53,15 @@ services:
       APP_UID: "1000"
       APP_GID: "1000"
       APP_ENV: dev
-      DATABASE_URL: "mysql://app:app@mysql:3306/app?serverVersion=8.0"
-      MESSENGER_TRANSPORT_DSN: "amqp://guest:guest@rabbitmq:5672/%2f/messages"
-      MESSENGER_FAILURE_TRANSPORT_DSN: "amqp://guest:guest@rabbitmq:5672/%2f/failed"
+      DATABASE_URL: "mysql://${DB_USER:-app}:${DB_PASSWORD:?Set DB_PASSWORD in .env}@mysql:3306/${DB_NAME:-app}?serverVersion=8.0"
+      MESSENGER_TRANSPORT_DSN: "amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672/%2f/messages"
+      MESSENGER_FAILURE_TRANSPORT_DSN: "amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672/%2f/failed"
       BASE_PUBLIC_URL: "http://nginx"
       WORK_DIR: "/var/www/html/var/work"
       GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp-sa.json
-      GCP_PROJECT_ID: floorfy-test-483313
-      GCP_VERTEX_LOCATION: us-central1
-      GCP_GCS_BUCKET: floorfy-veo-storage
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-}
+      GCP_VERTEX_LOCATION: ${GCP_VERTEX_LOCATION:-us-central1}
+      GCP_GCS_BUCKET: ${GCP_GCS_BUCKET:-}
       # Veo (Vertex AI)
       VEO_LOCATION: "europe-west4"
       VEO_MODEL_ID: "veo-2.0-generate-001"
@@ -83,10 +83,10 @@ services:
   mysql:
     image: mysql:8.0
     environment:
-      MYSQL_DATABASE: app
-      MYSQL_USER: app
-      MYSQL_PASSWORD: app
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: ${DB_NAME:-app}
+      MYSQL_USER: ${DB_USER:-app}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
     ports:
       - "3307:3306"
     volumes:
