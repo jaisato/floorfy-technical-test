@@ -10,6 +10,7 @@ use App\Ui\Http\Request\CreateTaskRequest;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Messenger\Exception\HandlerFailedException;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Stamp\HandledStamp;
 use Symfony\Component\Routing\Attribute\Route;
@@ -62,7 +63,14 @@ final class TaskController extends AbstractController
     #[Route('/api/tasks/{id}', methods: ['GET'])]
     public function get(string $id): JsonResponse
     {
-        $envelope = $this->queryBus->dispatch(new GetVideoTaskQuery($id));
+        try {
+            $envelope = $this->queryBus->dispatch(new GetVideoTaskQuery($id));
+        } catch (\Throwable $e) {
+            if ($this->isInvalidIdException($e)) {
+                return new JsonResponse(['error' => 'Not found'], 404);
+            }
+            throw $e;
+        }
         /** @var VideoTaskView|null $view */
         $view = $envelope->last(HandledStamp::class)?->getResult();
 
@@ -80,7 +88,14 @@ final class TaskController extends AbstractController
     #[Route('/api/tasks/{id}/final', methods: ['GET'])]
     public function final(string $id): JsonResponse
     {
-        $envelope = $this->queryBus->dispatch(new GetVideoTaskQuery($id));
+        try {
+            $envelope = $this->queryBus->dispatch(new GetVideoTaskQuery($id));
+        } catch (\Throwable $e) {
+            if ($this->isInvalidIdException($e)) {
+                return new JsonResponse(['error' => 'Not found'], 404);
+            }
+            throw $e;
+        }
         /** @var VideoTaskView|null $view */
         $view = $envelope->last(HandledStamp::class)?->getResult();
 
@@ -93,6 +108,29 @@ final class TaskController extends AbstractController
             'status' => $view->status,
             'final_video_url' => $view->finalVideoUrl,
         ], 200);
+    }
+
+    /**
+     * A malformed {id} route param (not a valid UUID) makes the query handler
+     * throw \InvalidArgumentException, which Messenger wraps in a
+     * HandlerFailedException. Treat that as "not found" (404) instead of
+     * letting it bubble up as an unhandled 500 error.
+     */
+    private function isInvalidIdException(\Throwable $e): bool
+    {
+        if ($e instanceof \InvalidArgumentException) {
+            return true;
+        }
+
+        if ($e instanceof HandlerFailedException) {
+            foreach ($e->getWrappedExceptions() as $wrapped) {
+                if ($wrapped instanceof \InvalidArgumentException) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private function badRequest(string $message, array $context = []): JsonResponse
