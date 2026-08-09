@@ -44,6 +44,11 @@ final class ImageDownloader
         $deadline = microtime(true) + self::MAX_TOTAL_SECONDS;
 
         for ($hop = 0; $hop <= self::MAX_REDIRECTS; $hop++) {
+            // Checked before the guard, not after: assertFetchable() resolves
+            // DNS, and a hop that starts with no budget left would otherwise
+            // block in the resolver before anything noticed the deadline.
+            self::assertBudgetRemains($deadline);
+
             $ips = $this->urlGuard->assertFetchable($url);
 
             $response = $this->requestPinnedToAValidatedAddress($url, $ips, $deadline);
@@ -128,11 +133,7 @@ final class ImageDownloader
      */
     private function budgetedOptions(float $deadline): array
     {
-        $remaining = $deadline - microtime(true);
-
-        if ($remaining <= 0) {
-            throw new \RuntimeException('Se agotó el tiempo máximo de descarga de la imagen.');
-        }
+        $remaining = self::assertBudgetRemains($deadline);
 
         return [
             'max_redirects' => 0,
@@ -197,6 +198,25 @@ final class ImageDownloader
 
             $offset += $bytes;
         }
+    }
+
+    /**
+     * @return float seconds left of the shared budget
+     *
+     * Note the resolver itself is not bounded by this: PHP's dns_get_record()
+     * takes no timeout, so a lookup already in flight runs to the system
+     * resolver's own limit. What this does guarantee is that no new hop, lookup
+     * or request is started once the budget is gone.
+     */
+    private static function assertBudgetRemains(float $deadline): float
+    {
+        $remaining = $deadline - microtime(true);
+
+        if ($remaining <= 0) {
+            throw new \RuntimeException('Se agotó el tiempo máximo de descarga de la imagen.');
+        }
+
+        return $remaining;
     }
 
     /**
