@@ -224,7 +224,17 @@ final class ImageDownloader
 
         $base = parse_url($currentUrl);
         $scheme = $base['scheme'] ?? 'https';
-        $authority = ($base['host'] ?? '').(isset($base['port']) ? ':'.$base['port'] : '');
+
+        // The authority includes userinfo. Rebuilding it from host and port
+        // alone silently drops the credentials in
+        // https://user:pass@example.com/..., so a relative redirect on an
+        // authenticated URL would come back 401.
+        $userInfo = '';
+        if (isset($base['user'])) {
+            $userInfo = $base['user'].(isset($base['pass']) ? ':'.$base['pass'] : '').'@';
+        }
+
+        $authority = $userInfo.($base['host'] ?? '').(isset($base['port']) ? ':'.$base['port'] : '');
 
         // Protocol-relative: //host/path
         if (str_starts_with($location, '//')) {

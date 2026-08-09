@@ -17,22 +17,34 @@ final class PublicUrlGuard
     private const ALLOWED_SCHEMES = ['http', 'https'];
 
     /**
-     * IPv4/IPv6 ranges that must never be reachable through a user-supplied
-     * URL. FILTER_FLAG_NO_PRIV_RANGE / NO_RES_RANGE cover most of this, but
-     * not the cloud metadata address, which is the one that matters most.
+     * Every IPv4 range IANA marks as special-purpose (RFC 6890 and its
+     * updates), i.e. not globally reachable.
+     *
+     * IPv4 has no single "global unicast" prefix to allow-list the way
+     * 2000::/3 works for IPv6, so the deny-by-default intent is expressed by
+     * enumerating the special-purpose space exhaustively rather than listing
+     * only the ranges that came to mind. Anything left over is genuinely
+     * routable address space.
      */
     private const BLOCKED_V4 = [
-        ['0.0.0.0', 8],
-        ['10.0.0.0', 8],
-        ['100.64.0.0', 10],
-        ['127.0.0.0', 8],
-        ['169.254.0.0', 16],
-        ['172.16.0.0', 12],
-        ['192.0.0.0', 24],
-        ['192.168.0.0', 16],
-        ['198.18.0.0', 15],
-        ['224.0.0.0', 4],
-        ['240.0.0.0', 4],
+        ['0.0.0.0', 8],           // this network
+        ['10.0.0.0', 8],          // private
+        ['100.64.0.0', 10],       // carrier-grade NAT
+        ['127.0.0.0', 8],         // loopback
+        ['169.254.0.0', 16],      // link-local, incl. cloud metadata
+        ['172.16.0.0', 12],       // private
+        ['192.0.0.0', 24],        // IETF protocol assignments
+        ['192.0.2.0', 24],        // TEST-NET-1
+        ['192.31.196.0', 24],     // AS112-v4
+        ['192.52.193.0', 24],     // AMT
+        ['192.88.99.0', 24],      // 6to4 relay anycast (deprecated)
+        ['192.168.0.0', 16],      // private
+        ['192.175.48.0', 24],     // direct delegation AS112
+        ['198.18.0.0', 15],       // benchmarking
+        ['198.51.100.0', 24],     // TEST-NET-2
+        ['203.0.113.0', 24],      // TEST-NET-3
+        ['224.0.0.0', 4],         // multicast
+        ['240.0.0.0', 4],         // reserved, incl. 255.255.255.255
     ];
 
     /**

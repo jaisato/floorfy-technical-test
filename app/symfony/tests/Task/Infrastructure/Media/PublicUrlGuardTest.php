@@ -24,6 +24,12 @@ final class PublicUrlGuardTest extends TestCase
         yield 'private 172.16/12' => ['http://172.16.5.5/x.png'];
         yield 'private 192.168/16' => ['http://192.168.1.5/x.png'];
         yield 'carrier grade nat' => ['http://100.64.0.1/x.png'];
+        // Special-purpose IPv4 that a deployment may route internally.
+        yield 'test-net-1' => ['http://192.0.2.1/x.png'];
+        yield 'test-net-2' => ['http://198.51.100.1/x.png'];
+        yield 'test-net-3' => ['http://203.0.113.1/x.png'];
+        yield '6to4 relay anycast' => ['http://192.88.99.1/x.png'];
+        yield 'broadcast' => ['http://255.255.255.255/x.png'];
         yield 'ipv6 loopback' => ['http://[::1]/x.png'];
         // The same host has many spellings, and the caller picks one. A textual
         // comparison against "::1" misses every expanded form.
