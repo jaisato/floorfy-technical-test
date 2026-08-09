@@ -5,13 +5,28 @@ namespace App\Task\Infrastructure\Media;
 
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Filesystem\Filesystem;
-use Symfony\Component\Process\Process;
+use Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface;
+use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Symfony\Contracts\HttpClient\ResponseInterface;
 
 final class ImageDownloader
 {
+    private const MAX_REDIRECTS = 5;
+    private const MAX_BYTES = 50 * 1024 * 1024;
+    private const CONNECT_TIMEOUT_SECONDS = 30;
+
+    /**
+     * Wall-clock budget for the whole download, redirects and address retries
+     * included. Handing each attempt its own budget let one task hold a worker
+     * for addresses x redirects x budget.
+     */
+    private const MAX_TOTAL_SECONDS = 120;
+
     public function __construct(
         #[Autowire('%app.ffmpeg_work_dir%/task_images')]
         private readonly string $workDir,
+        private readonly HttpClientInterface $httpClient,
+        private readonly PublicUrlGuard $urlGuard = new PublicUrlGuard(),
     ) {}
 
     public function download(string $imageUrl, string $basename): string
@@ -19,30 +34,337 @@ final class ImageDownloader
         $fs = new Filesystem();
         $fs->mkdir($this->workDir);
 
-        $dst = rtrim($this->workDir, '/').'/'.ltrim($basename, '/');
+        $dst = $this->safeDestination($basename);
         $fs->mkdir(\dirname($dst));
 
-        if (str_starts_with($imageUrl, 'file://')) {
-            $src = substr($imageUrl, 7);
-            if ($src === '' || !is_file($src)) {
-                throw new \RuntimeException('Imagen file:// inválida: '.$imageUrl);
+        // Redirects are followed by hand so that every hop is re-checked: a
+        // permitted public URL is free to redirect to 169.254.169.254, and
+        // letting the HTTP client follow it would defeat the guard entirely.
+        $url = $imageUrl;
+        $deadline = microtime(true) + self::MAX_TOTAL_SECONDS;
+
+        for ($hop = 0; $hop <= self::MAX_REDIRECTS; $hop++) {
+            // Checked before the guard, not after: assertFetchable() resolves
+            // DNS, and a hop that starts with no budget left would otherwise
+            // block in the resolver before anything noticed the deadline.
+            self::assertBudgetRemains($deadline);
+
+            $ips = $this->urlGuard->assertFetchable($url);
+
+            $response = $this->requestPinnedToAValidatedAddress($url, $ips, $deadline);
+
+            $status = $response->getStatusCode();
+
+            if ($status >= 300 && $status < 400) {
+                $location = $response->getHeaders(false)['location'][0] ?? null;
+
+                if ($location === null) {
+                    throw new \RuntimeException('Redirección sin cabecera Location al descargar la imagen.');
+                }
+
+                $url = $this->resolveLocation($url, $location);
+                continue;
             }
-            $fs->copy($src, $dst, true);
+
+            // Any 2xx, not just 200: the `curl -L --fail` this replaced failed
+            // on server errors, not on a successful status that happens not to
+            // be 200. A transforming proxy answering 203, or a 206 from a range
+            // request, still delivers the image.
+            if ($status < 200 || $status >= 300) {
+                throw new \RuntimeException(sprintf('No se pudo descargar la imagen: HTTP %d', $status));
+            }
+
+            $written = $this->streamToFile($response, $dst);
+
+            // 204/205, or any 2xx with nothing behind it, would otherwise leave
+            // a zero-byte file that ffmpeg later fails on for no clear reason.
+            if ($written === 0) {
+                @unlink($dst);
+
+                throw new \RuntimeException(sprintf('La respuesta HTTP %d no contenía imagen alguna.', $status));
+            }
+
             return $dst;
         }
 
-        $process = new Process([
-            'bash',
-            '-lc',
-            sprintf('curl -L --fail -sS %s -o %s', escapeshellarg($imageUrl), escapeshellarg($dst))
-        ]);
-        $process->setTimeout(120);
-        $process->run();
+        throw BlockedUrl::tooManyRedirects($imageUrl);
+    }
 
-        if (!$process->isSuccessful() || !is_file($dst)) {
-            throw new \RuntimeException('No se pudo descargar la imagen: '.$process->getErrorOutput());
+    /**
+     * Issues the request against one of the addresses the guard approved.
+     *
+     * Pinning matters: handing the client the hostname would let it perform its
+     * own DNS lookup, and a name served with a zero TTL can answer with a public
+     * address for the guard and a private one for the connection - DNS
+     * rebinding straight past the check. The hostname stays in the URL, so Host,
+     * SNI and certificate validation are unaffected.
+     *
+     * Every validated address is tried before giving up, which is the failover a
+     * client would normally do across a host's A/AAAA records; pinning to just
+     * the first would turn one unreachable endpoint into a failed download.
+     *
+     * @param list<string> $ips
+     */
+    private function requestPinnedToAValidatedAddress(string $url, array $ips, float $deadline): ResponseInterface
+    {
+        $host = parse_url($url, PHP_URL_HOST);
+        $needsPinning = is_string($host) && filter_var(trim($host, '[]'), FILTER_VALIDATE_IP) === false;
+
+        if (!$needsPinning) {
+            $response = $this->httpClient->request('GET', $url, $this->budgetedOptions($deadline));
+            $response->getStatusCode();
+
+            return $response;
         }
 
-        return $dst;
+        $lastError = null;
+
+        foreach ($ips as $ip) {
+            try {
+                $options = $this->budgetedOptions($deadline) + ['resolve' => [$host => $ip]];
+                $response = $this->httpClient->request('GET', $url, $options);
+
+                // Force the transport to connect now, so an unreachable address
+                // fails here and the next one gets its turn.
+                $response->getStatusCode();
+
+                return $response;
+            } catch (TransportExceptionInterface $e) {
+                $lastError = $e;
+            }
+        }
+
+        throw $lastError ?? new \RuntimeException('No se pudo conectar con ninguna dirección validada para '.$url);
+    }
+
+    /**
+     * Options carrying whatever is left of the shared budget, so retries and
+     * redirects cannot each start the clock again.
+     *
+     * @return array<string,mixed>
+     */
+    private function budgetedOptions(float $deadline): array
+    {
+        $remaining = self::assertBudgetRemains($deadline);
+
+        return [
+            'max_redirects' => 0,
+            'timeout' => min(self::CONNECT_TIMEOUT_SECONDS, $remaining),
+            'max_duration' => $remaining,
+        ];
+    }
+
+    /** @return int bytes written */
+    private function streamToFile(ResponseInterface $response, string $dst): int
+    {
+        $handle = fopen($dst, 'wb');
+
+        if ($handle === false) {
+            throw new \RuntimeException('No se pudo escribir la imagen en disco: '.$dst);
+        }
+
+        $written = 0;
+
+        try {
+            foreach ($this->httpClient->stream($response) as $chunk) {
+                $content = $chunk->getContent();
+
+                if ($content === '') {
+                    continue;
+                }
+
+                $written += \strlen($content);
+
+                if ($written > self::MAX_BYTES) {
+                    throw BlockedUrl::tooLarge(self::MAX_BYTES);
+                }
+
+                // fwrite() returns false on failure and can report a short write
+                // when the disk is full or a quota is hit. Ignoring it means
+                // returning a truncated image as a successful download.
+                self::writeAll($handle, $content);
+            }
+        } catch (\Throwable $e) {
+            fclose($handle);
+            @unlink($dst);
+
+            throw $e;
+        }
+
+        fclose($handle);
+
+        return $written;
+    }
+
+    /**
+     * @param resource $handle
+     */
+    private static function writeAll($handle, string $content): void
+    {
+        $length = \strlen($content);
+        $offset = 0;
+
+        while ($offset < $length) {
+            $bytes = fwrite($handle, substr($content, $offset));
+
+            if ($bytes === false || $bytes === 0) {
+                throw new \RuntimeException('No se pudo escribir la imagen completa en disco.');
+            }
+
+            $offset += $bytes;
+        }
+    }
+
+    /**
+     * @return float seconds left of the shared budget
+     *
+     * Note the resolver itself is not bounded by this: PHP's dns_get_record()
+     * takes no timeout, so a lookup already in flight runs to the system
+     * resolver's own limit. What this does guarantee is that no new hop, lookup
+     * or request is started once the budget is gone.
+     */
+    private static function assertBudgetRemains(float $deadline): float
+    {
+        $remaining = $deadline - microtime(true);
+
+        if ($remaining <= 0) {
+            throw new \RuntimeException('Se agotó el tiempo máximo de descarga de la imagen.');
+        }
+
+        return $remaining;
+    }
+
+    /**
+     * Keeps the download inside the work directory: a basename containing
+     * "../" would otherwise write anywhere the process can reach.
+     */
+    private function safeDestination(string $basename): string
+    {
+        $root = rtrim($this->workDir, '/');
+        $relative = ltrim(str_replace('\\', '/', $basename), '/');
+
+        $segments = [];
+        foreach (explode('/', $relative) as $segment) {
+            if ($segment === '' || $segment === '.' || $segment === '..') {
+                continue;
+            }
+            $segments[] = $segment;
+        }
+
+        if ($segments === []) {
+            throw new \RuntimeException('Nombre de fichero de imagen inválido: '.$basename);
+        }
+
+        return $root.'/'.implode('/', $segments);
+    }
+
+    /**
+     * Resolves a Location header against the current URL following the
+     * URI-reference rules of RFC 3986 section 5.
+     *
+     * Treating every non-absolute Location as host-relative is wrong for the
+     * common cases: "next.jpg" sent from https://example.com/images/source
+     * belongs under /images/, "?page=2" keeps the current path, and
+     * "//cdn.example.com/x" is a different host, not a path.
+     */
+    private function resolveLocation(string $currentUrl, string $location): string
+    {
+        $location = trim($location);
+
+        // Position-based, not strtok(): strtok skips leading delimiters, so a
+        // fragment-only "#frag" came back as "frag" and was followed as a
+        // sibling path. A fragment-only reference keeps the current URL, and
+        // fragments are never sent in the request anyway.
+        $hash = strpos($location, '#');
+        if ($hash !== false) {
+            $location = substr($location, 0, $hash);
+        }
+
+        if ($location === '') {
+            return $currentUrl;
+        }
+
+        // Absolute URL.
+        if (parse_url($location, PHP_URL_SCHEME) !== null) {
+            return $location;
+        }
+
+        $base = parse_url($currentUrl);
+        $scheme = $base['scheme'] ?? 'https';
+
+        // The authority includes userinfo. Rebuilding it from host and port
+        // alone silently drops the credentials in
+        // https://user:pass@example.com/..., so a relative redirect on an
+        // authenticated URL would come back 401.
+        $userInfo = '';
+        if (isset($base['user'])) {
+            $userInfo = $base['user'].(isset($base['pass']) ? ':'.$base['pass'] : '').'@';
+        }
+
+        $authority = $userInfo.($base['host'] ?? '').(isset($base['port']) ? ':'.$base['port'] : '');
+
+        // Protocol-relative: //host/path
+        if (str_starts_with($location, '//')) {
+            return $scheme.':'.$location;
+        }
+
+        // Absolute path.
+        if (str_starts_with($location, '/')) {
+            return $scheme.'://'.$authority.self::normalisePath($location);
+        }
+
+        $basePath = $base['path'] ?? '/';
+
+        // Query-only reference: keep the current path.
+        if (str_starts_with($location, '?')) {
+            return $scheme.'://'.$authority.$basePath.$location;
+        }
+
+        // Relative path: resolve against the directory of the current path.
+        $directory = substr($basePath, 0, (int) strrpos($basePath, '/') + 1);
+        if ($directory === '') {
+            $directory = '/';
+        }
+
+        return $scheme.'://'.$authority.self::normalisePath($directory.$location);
+    }
+
+    /** Collapses "." and ".." segments, per RFC 3986 section 5.2.4. */
+    private static function normalisePath(string $path): string
+    {
+        $query = '';
+        if (($pos = strpos($path, '?')) !== false) {
+            $query = substr($path, $pos);
+            $path = substr($path, 0, $pos);
+        }
+
+        $segments = explode('/', $path);
+        $lastIndex = count($segments) - 1;
+        $out = [];
+
+        foreach ($segments as $index => $segment) {
+            if ($segment === '.' || $segment === '..') {
+                if ($segment === '..' && count($out) > 1) {
+                    array_pop($out);
+                }
+
+                // A trailing "." or ".." denotes a directory: "Location: ." from
+                // /images/source resolves to /images/, not /images. Dropping the
+                // segment without putting the slash back requests a different
+                // path, which servers that canonicalise directory URLs answer
+                // with another redirect.
+                if ($index === $lastIndex) {
+                    $out[] = '';
+                }
+
+                continue;
+            }
+
+            $out[] = $segment;
+        }
+
+        $resolved = implode('/', $out);
+
+        return ($resolved === '' ? '/' : $resolved).$query;
     }
 }
