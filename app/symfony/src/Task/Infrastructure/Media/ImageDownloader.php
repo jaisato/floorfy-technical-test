@@ -5,7 +5,9 @@ namespace App\Task\Infrastructure\Media;
 
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Filesystem\Filesystem;
+use Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Symfony\Contracts\HttpClient\ResponseInterface;
 
 final class ImageDownloader
 {
@@ -33,26 +35,9 @@ final class ImageDownloader
         $url = $imageUrl;
 
         for ($hop = 0; $hop <= self::MAX_REDIRECTS; $hop++) {
-            $ip = $this->urlGuard->assertFetchable($url);
+            $ips = $this->urlGuard->assertFetchable($url);
 
-            $options = [
-                'max_redirects' => 0,
-                'timeout' => 30,
-                'max_duration' => 120,
-            ];
-
-            // Pin the connection to the address the guard just approved. Without
-            // this the client performs its own DNS lookup, and a hostname with a
-            // zero TTL can hand the guard a public address and the client a
-            // private one - DNS rebinding straight past the check. The hostname
-            // stays in the URL so Host, SNI and certificate validation are
-            // unaffected.
-            $host = parse_url($url, PHP_URL_HOST);
-            if (is_string($host) && filter_var(trim($host, '[]'), FILTER_VALIDATE_IP) === false) {
-                $options['resolve'] = [$host => $ip];
-            }
-
-            $response = $this->httpClient->request('GET', $url, $options);
+            $response = $this->requestPinnedToAValidatedAddress($url, $ips);
 
             $status = $response->getStatusCode();
 
@@ -79,7 +64,59 @@ final class ImageDownloader
         throw BlockedUrl::tooManyRedirects($imageUrl);
     }
 
-    private function streamToFile(\Symfony\Contracts\HttpClient\ResponseInterface $response, string $dst): void
+    /**
+     * Issues the request against one of the addresses the guard approved.
+     *
+     * Pinning matters: handing the client the hostname would let it perform its
+     * own DNS lookup, and a name served with a zero TTL can answer with a public
+     * address for the guard and a private one for the connection - DNS
+     * rebinding straight past the check. The hostname stays in the URL, so Host,
+     * SNI and certificate validation are unaffected.
+     *
+     * Every validated address is tried before giving up, which is the failover a
+     * client would normally do across a host's A/AAAA records; pinning to just
+     * the first would turn one unreachable endpoint into a failed download.
+     *
+     * @param list<string> $ips
+     */
+    private function requestPinnedToAValidatedAddress(string $url, array $ips): ResponseInterface
+    {
+        $host = parse_url($url, PHP_URL_HOST);
+        $needsPinning = is_string($host) && filter_var(trim($host, '[]'), FILTER_VALIDATE_IP) === false;
+
+        $options = [
+            'max_redirects' => 0,
+            'timeout' => 30,
+            'max_duration' => 120,
+        ];
+
+        if (!$needsPinning) {
+            $response = $this->httpClient->request('GET', $url, $options);
+            $response->getStatusCode();
+
+            return $response;
+        }
+
+        $lastError = null;
+
+        foreach ($ips as $ip) {
+            try {
+                $response = $this->httpClient->request('GET', $url, $options + ['resolve' => [$host => $ip]]);
+
+                // Force the transport to connect now, so an unreachable address
+                // fails here and the next one gets its turn.
+                $response->getStatusCode();
+
+                return $response;
+            } catch (TransportExceptionInterface $e) {
+                $lastError = $e;
+            }
+        }
+
+        throw $lastError ?? new \RuntimeException('No se pudo conectar con ninguna dirección validada para '.$url);
+    }
+
+    private function streamToFile(ResponseInterface $response, string $dst): void
     {
         $handle = fopen($dst, 'wb');
 
@@ -103,7 +140,10 @@ final class ImageDownloader
                     throw BlockedUrl::tooLarge(self::MAX_BYTES);
                 }
 
-                fwrite($handle, $content);
+                // fwrite() returns false on failure and can report a short write
+                // when the disk is full or a quota is hit. Ignoring it means
+                // returning a truncated image as a successful download.
+                self::writeAll($handle, $content);
             }
         } catch (\Throwable $e) {
             fclose($handle);
@@ -113,6 +153,25 @@ final class ImageDownloader
         }
 
         fclose($handle);
+    }
+
+    /**
+     * @param resource $handle
+     */
+    private static function writeAll($handle, string $content): void
+    {
+        $length = \strlen($content);
+        $offset = 0;
+
+        while ($offset < $length) {
+            $bytes = fwrite($handle, substr($content, $offset));
+
+            if ($bytes === false || $bytes === 0) {
+                throw new \RuntimeException('No se pudo escribir la imagen completa en disco.');
+            }
+
+            $offset += $bytes;
+        }
     }
 
     /**

@@ -36,6 +36,17 @@ final class PublicUrlGuardTest extends TestCase
         yield 'ipv6 unique local' => ['http://[fc00::1]/x.png'];
         yield 'ipv6 link local' => ['http://[fe80::1]/x.png'];
         yield 'ipv6 multicast' => ['http://[ff02::1]/x.png'];
+        // Deny-by-default: only global unicast 2000::/3 is allowed, so a
+        // special-purpose range nobody enumerated is refused rather than
+        // treated as public.
+        yield 'ipv6 site local (deprecated)' => ['http://[fec0::1]/admin'];
+        yield 'ipv6 site local expanded' => ['http://[fec0:0:0:0:0:0:0:1]/admin'];
+        yield 'ipv6 discard only' => ['http://[100::1]/x.png'];
+        // Tunnels carrying an arbitrary IPv4 destination inside a global-looking
+        // address.
+        yield 'ipv6 6to4 tunnel' => ['http://[2002:7f00:1::1]/x.png'];
+        yield 'ipv6 teredo tunnel' => ['http://[2001:0:1::1]/x.png'];
+        yield 'ipv6 documentation range' => ['http://[2001:db8::1]/x.png'];
         yield 'file scheme' => ['file:///etc/passwd'];
         yield 'gopher scheme' => ['gopher://evil.example/x'];
         yield 'no scheme' => ['/etc/passwd'];
@@ -55,6 +66,7 @@ final class PublicUrlGuardTest extends TestCase
         yield 'public ipv4' => ['http://8.8.8.8/photo.jpg'];
         yield 'public ipv4 https' => ['https://1.1.1.1/photo.jpg'];
         yield 'public ipv6' => ['http://[2001:4860:4860::8888]/photo.jpg'];
+        yield 'public ipv6 cloudflare' => ['http://[2606:4700:4700::1111]/photo.jpg'];
     }
 
     #[DataProvider('allowedUrls')]
@@ -70,21 +82,24 @@ final class PublicUrlGuardTest extends TestCase
      * the hostname: a name served with a zero TTL can answer with a public
      * address here and a private one at connection time (DNS rebinding).
      */
-    public function testReturnsTheValidatedAddressToPinTheConnectionTo(): void
+    public function testReturnsTheValidatedAddressesToPinTheConnectionTo(): void
     {
-        $ip = (new PublicUrlGuard())->assertFetchable('http://8.8.8.8/photo.jpg');
+        $ips = (new PublicUrlGuard())->assertFetchable('http://8.8.8.8/photo.jpg');
 
-        self::assertSame('8.8.8.8', $ip);
+        self::assertSame(['8.8.8.8'], $ips);
     }
 
-    public function testReturnedAddressIsAlwaysPublic(): void
+    public function testEveryReturnedAddressIsPublic(): void
     {
-        $ip = (new PublicUrlGuard())->assertFetchable('https://1.1.1.1/photo.jpg');
+        $ips = (new PublicUrlGuard())->assertFetchable('https://1.1.1.1/photo.jpg');
 
-        self::assertNotFalse(filter_var($ip, FILTER_VALIDATE_IP));
-        self::assertFalse(
-            filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false,
-            'the guard must never hand back a private or reserved address',
-        );
+        self::assertNotEmpty($ips);
+
+        foreach ($ips as $ip) {
+            self::assertNotFalse(
+                filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE),
+                'the guard must never hand back a private or reserved address',
+            );
+        }
     }
 }

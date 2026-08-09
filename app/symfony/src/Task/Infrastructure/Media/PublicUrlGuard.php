@@ -36,11 +36,12 @@ final class PublicUrlGuard
     ];
 
     /**
-     * @return string the validated address the caller must connect to
+     * @return list<string> every validated address, in resolution order; the
+     *                      caller must connect to one of these and to nothing else
      *
      * @throws BlockedUrl
      */
-    public function assertFetchable(string $url): string
+    public function assertFetchable(string $url): array
     {
         $parts = parse_url($url);
 
@@ -62,12 +63,17 @@ final class PublicUrlGuard
             }
         }
 
-        // Returning the address matters: if the caller hands the *hostname* to
-        // an HTTP client, the client resolves it again, and a name served with
-        // a zero TTL can answer with a public address here and a private one
-        // there (DNS rebinding). The connection has to be pinned to an address
-        // that was actually checked.
-        return $ips[0];
+        // Returning the addresses matters: if the caller hands the *hostname*
+        // to an HTTP client, the client resolves it again, and a name served
+        // with a zero TTL can answer with a public address here and a private
+        // one there (DNS rebinding). The connection has to be pinned to an
+        // address that was actually checked.
+        //
+        // All of them are returned rather than just the first: a host with
+        // several records expects the client to fail over between them, and
+        // handing back one address would turn a single unreachable endpoint
+        // into a failed download.
+        return array_values($ips);
     }
 
     /**
@@ -138,23 +144,6 @@ final class PublicUrlGuard
             return false;
         }
 
-        $first = ord($packed[0]);
-
-        // Unique-local fc00::/7
-        if (($first & 0xFE) === 0xFC) {
-            return false;
-        }
-
-        // Link-local fe80::/10
-        if ($first === 0xFE && (ord($packed[1]) & 0xC0) === 0x80) {
-            return false;
-        }
-
-        // Multicast ff00::/8
-        if ($first === 0xFF) {
-            return false;
-        }
-
         // IPv4-mapped ::ffff:a.b.c.d and IPv4-compatible ::a.b.c.d both carry an
         // IPv4 address in the last four bytes; it has to face the IPv4 rules.
         $isMapped = str_starts_with($packed, str_repeat("\0", 10)."\xFF\xFF");
@@ -164,6 +153,35 @@ final class PublicUrlGuard
             $embedded = inet_ntop(substr($packed, 12));
 
             return is_string($embedded) && $this->isPublic($embedded);
+        }
+
+        $first = ord($packed[0]);
+
+        // Everything below is deny-by-default. Listing the ranges to block and
+        // allowing the rest means any special-purpose range not thought of -
+        // deprecated site-local fec0::/10, for one - is treated as a public
+        // address. Only global unicast 2000::/3 is routable on the internet, so
+        // that is the allow-list.
+        if (($first & 0xE0) !== 0x20) {
+            return false;
+        }
+
+        $second = ord($packed[1]);
+
+        // 2002::/16 (6to4) and 2001::/32 (Teredo) are tunnelling mechanisms
+        // that carry an arbitrary IPv4 destination - including a private one -
+        // inside an address that otherwise looks global.
+        if ($first === 0x20 && $second === 0x02) {
+            return false;
+        }
+
+        if ($first === 0x20 && $second === 0x01 && ord($packed[2]) === 0x00 && ord($packed[3]) === 0x00) {
+            return false;
+        }
+
+        // 2001:db8::/32 is reserved for documentation and never routes.
+        if ($first === 0x20 && $second === 0x01 && ord($packed[2]) === 0x0D && ord($packed[3]) === 0xB8) {
+            return false;
         }
 
         return true;
