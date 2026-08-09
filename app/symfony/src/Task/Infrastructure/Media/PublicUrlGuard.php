@@ -48,6 +48,27 @@ final class PublicUrlGuard
     ];
 
     /**
+     * Special-purpose IPv6 blocks that sit inside global unicast 2000::/3, from
+     * the IANA IPv6 Special-Purpose Address Registry. Being in 2000::/3 does
+     * not by itself mean an address is globally reachable.
+     */
+    private const BLOCKED_V6 = [
+        ['2001:0000::', 32],      // Teredo
+        ['2001:1::1', 128],       // Port Control Protocol anycast
+        ['2001:1::2', 128],       // TURN anycast
+        ['2001:2::', 48],         // benchmarking
+        ['2001:3::', 32],         // AMT
+        ['2001:4:112::', 48],     // AS112-v6
+        ['2001:10::', 28],        // ORCHID (deprecated)
+        ['2001:20::', 28],        // ORCHIDv2
+        ['2001:30::', 28],        // drone remote ID
+        ['2001:db8::', 32],       // documentation
+        ['2002::', 16],           // 6to4
+        ['2620:4f:8000::', 48],   // direct delegation AS112
+        ['3fff::', 20],           // documentation
+    ];
+
+    /**
      * @return list<string> every validated address, in resolution order; the
      *                      caller must connect to one of these and to nothing else
      *
@@ -167,36 +188,49 @@ final class PublicUrlGuard
             return is_string($embedded) && $this->isPublic($embedded);
         }
 
-        $first = ord($packed[0]);
-
-        // Everything below is deny-by-default. Listing the ranges to block and
-        // allowing the rest means any special-purpose range not thought of -
-        // deprecated site-local fec0::/10, for one - is treated as a public
-        // address. Only global unicast 2000::/3 is routable on the internet, so
-        // that is the allow-list.
-        if (($first & 0xE0) !== 0x20) {
+        // Deny by default: only global unicast 2000::/3 is routable on the
+        // internet, so that is the allow-list rather than a list of ranges to
+        // block - a special-purpose range nobody enumerated must not default to
+        // "public".
+        if ((ord($packed[0]) & 0xE0) !== 0x20) {
             return false;
         }
 
-        $second = ord($packed[1]);
-
-        // 2002::/16 (6to4) and 2001::/32 (Teredo) are tunnelling mechanisms
-        // that carry an arbitrary IPv4 destination - including a private one -
-        // inside an address that otherwise looks global.
-        if ($first === 0x20 && $second === 0x02) {
-            return false;
-        }
-
-        if ($first === 0x20 && $second === 0x01 && ord($packed[2]) === 0x00 && ord($packed[3]) === 0x00) {
-            return false;
-        }
-
-        // 2001:db8::/32 is reserved for documentation and never routes.
-        if ($first === 0x20 && $second === 0x01 && ord($packed[2]) === 0x0D && ord($packed[3]) === 0xB8) {
-            return false;
+        // Membership of 2000::/3 is necessary but not sufficient: IANA carves
+        // special-purpose blocks out of it that are not globally reachable.
+        foreach (self::BLOCKED_V6 as [$prefix, $bits]) {
+            if (self::inV6Range($packed, $prefix, $bits)) {
+                return false;
+            }
         }
 
         return true;
+    }
+
+    /** Compares the first $bits of a packed IPv6 address against a prefix. */
+    private static function inV6Range(string $packed, string $prefix, int $bits): bool
+    {
+        $prefixPacked = @inet_pton($prefix);
+
+        if ($prefixPacked === false || strlen($prefixPacked) !== 16) {
+            return false;
+        }
+
+        $fullBytes = intdiv($bits, 8);
+
+        if ($fullBytes > 0 && strncmp($packed, $prefixPacked, $fullBytes) !== 0) {
+            return false;
+        }
+
+        $remainingBits = $bits % 8;
+
+        if ($remainingBits === 0) {
+            return true;
+        }
+
+        $mask = 0xFF << (8 - $remainingBits) & 0xFF;
+
+        return (ord($packed[$fullBytes]) & $mask) === (ord($prefixPacked[$fullBytes]) & $mask);
     }
 
     private function inV4Range(string $ip, string $network, int $bits): bool
