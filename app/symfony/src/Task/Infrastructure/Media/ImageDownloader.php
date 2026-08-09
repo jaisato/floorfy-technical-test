@@ -66,11 +66,23 @@ final class ImageDownloader
                 continue;
             }
 
-            if ($status !== 200) {
+            // Any 2xx, not just 200: the `curl -L --fail` this replaced failed
+            // on server errors, not on a successful status that happens not to
+            // be 200. A transforming proxy answering 203, or a 206 from a range
+            // request, still delivers the image.
+            if ($status < 200 || $status >= 300) {
                 throw new \RuntimeException(sprintf('No se pudo descargar la imagen: HTTP %d', $status));
             }
 
-            $this->streamToFile($response, $dst);
+            $written = $this->streamToFile($response, $dst);
+
+            // 204/205, or any 2xx with nothing behind it, would otherwise leave
+            // a zero-byte file that ffmpeg later fails on for no clear reason.
+            if ($written === 0) {
+                @unlink($dst);
+
+                throw new \RuntimeException(sprintf('La respuesta HTTP %d no contenía imagen alguna.', $status));
+            }
 
             return $dst;
         }
@@ -142,7 +154,8 @@ final class ImageDownloader
         ];
     }
 
-    private function streamToFile(ResponseInterface $response, string $dst): void
+    /** @return int bytes written */
+    private function streamToFile(ResponseInterface $response, string $dst): int
     {
         $handle = fopen($dst, 'wb');
 
@@ -179,6 +192,8 @@ final class ImageDownloader
         }
 
         fclose($handle);
+
+        return $written;
     }
 
     /**
