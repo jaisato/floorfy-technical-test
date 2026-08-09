@@ -54,15 +54,18 @@ final class PublicUrlGuardTest extends TestCase
         yield 'ipv6 teredo tunnel' => ['http://[2001:0:1::1]/x.png'];
         yield 'ipv6 documentation range' => ['http://[2001:db8::1]/x.png'];
         // Sitting inside 2000::/3 is not the same as being globally reachable:
-        // IANA carves special-purpose blocks out of it.
+        // IANA carves special-purpose blocks out of it. 2001::/23 is blocked
+        // whole - every assignment in it is special-purpose and the remainder is
+        // unassigned.
+        yield 'ipv6 teredo' => ['http://[2001::1]/x.png'];
+        yield 'ipv6 pcp anycast' => ['http://[2001:1::1]/x.png'];
         yield 'ipv6 benchmarking' => ['http://[2001:2::1]/x.png'];
         yield 'ipv6 amt' => ['http://[2001:3::1]/x.png'];
         yield 'ipv6 as112' => ['http://[2001:4:112::1]/x.png'];
         yield 'ipv6 orchid' => ['http://[2001:10::1]/x.png'];
-        yield 'ipv6 orchid v2' => ['http://[2001:20::1]/x.png'];
-        yield 'ipv6 drone remote id' => ['http://[2001:30::1]/x.png'];
-        yield 'ipv6 pcp anycast' => ['http://[2001:1::1]/x.png'];
-        yield 'ipv6 turn anycast' => ['http://[2001:1::2]/x.png'];
+        yield 'ipv6 unassigned ietf space' => ['http://[2001:5::1]/x.png'];
+        yield 'ipv6 top of ietf block' => ['http://[2001:1ff::1]/x.png'];
+        yield 'ipv6 documentation' => ['http://[2001:db8::1]/x.png'];
         yield 'ipv6 direct delegation as112' => ['http://[2620:4f:8000::1]/x.png'];
         yield 'ipv6 documentation 3fff' => ['http://[3fff::1]/x.png'];
         yield 'file scheme' => ['file:///etc/passwd'];
@@ -85,8 +88,8 @@ final class PublicUrlGuardTest extends TestCase
         yield 'public ipv4 https' => ['https://1.1.1.1/photo.jpg'];
         yield 'public ipv6' => ['http://[2001:4860:4860::8888]/photo.jpg'];
         yield 'public ipv6 cloudflare' => ['http://[2606:4700:4700::1111]/photo.jpg'];
-        // Immediately outside the blocked /128 and /48 above, to pin the edges.
-        yield 'public ipv6 next to pcp anycast' => ['http://[2001:1::3]/photo.jpg'];
+        // Immediately outside the blocked ranges, to pin the edges.
+        yield 'public ipv6 just past the ietf block' => ['http://[2001:200::1]/photo.jpg'];
         yield 'public ipv6 next to as112' => ['http://[2620:4f:7000::1]/photo.jpg'];
     }
 

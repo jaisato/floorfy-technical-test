@@ -53,15 +53,12 @@ final class PublicUrlGuard
      * not by itself mean an address is globally reachable.
      */
     private const BLOCKED_V6 = [
-        ['2001:0000::', 32],      // Teredo
-        ['2001:1::1', 128],       // Port Control Protocol anycast
-        ['2001:1::2', 128],       // TURN anycast
-        ['2001:2::', 48],         // benchmarking
-        ['2001:3::', 32],         // AMT
-        ['2001:4:112::', 48],     // AS112-v6
-        ['2001:10::', 28],        // ORCHID (deprecated)
-        ['2001:20::', 28],        // ORCHIDv2
-        ['2001:30::', 28],        // drone remote ID
+        // The whole IETF Protocol Assignments block. Everything assigned inside
+        // it is special-purpose (Teredo, PCP/TURN anycast, benchmarking, AMT,
+        // AS112, ORCHID, drone remote ID) and the remainder is unassigned, so
+        // blocking the parent covers the lot - including ranges that get
+        // assigned later, which enumerating the children one at a time does not.
+        ['2001::', 23],
         ['2001:db8::', 32],       // documentation
         ['2002::', 16],           // 6to4
         ['2620:4f:8000::', 48],   // direct delegation AS112

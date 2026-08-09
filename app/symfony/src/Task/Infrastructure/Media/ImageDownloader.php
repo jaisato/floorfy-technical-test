@@ -271,14 +271,25 @@ final class ImageDownloader
             $path = substr($path, 0, $pos);
         }
 
+        $segments = explode('/', $path);
+        $lastIndex = count($segments) - 1;
         $out = [];
-        foreach (explode('/', $path) as $segment) {
-            if ($segment === '.') {
-                continue;
-            }
 
-            if ($segment === '..') {
-                array_pop($out);
+        foreach ($segments as $index => $segment) {
+            if ($segment === '.' || $segment === '..') {
+                if ($segment === '..' && count($out) > 1) {
+                    array_pop($out);
+                }
+
+                // A trailing "." or ".." denotes a directory: "Location: ." from
+                // /images/source resolves to /images/, not /images. Dropping the
+                // segment without putting the slash back requests a different
+                // path, which servers that canonicalise directory URLs answer
+                // with another redirect.
+                if ($index === $lastIndex) {
+                    $out[] = '';
+                }
+
                 continue;
             }
 
