@@ -25,7 +25,17 @@ final class PublicUrlGuardTest extends TestCase
         yield 'private 192.168/16' => ['http://192.168.1.5/x.png'];
         yield 'carrier grade nat' => ['http://100.64.0.1/x.png'];
         yield 'ipv6 loopback' => ['http://[::1]/x.png'];
+        // The same host has many spellings, and the caller picks one. A textual
+        // comparison against "::1" misses every expanded form.
+        yield 'ipv6 loopback expanded' => ['http://[0:0:0:0:0:0:0:1]:8000/admin'];
+        yield 'ipv6 loopback zero padded' => ['http://[0000:0000:0000:0000:0000:0000:0000:0001]/x.png'];
+        yield 'ipv6 unspecified' => ['http://[::]/x.png'];
         yield 'ipv4 mapped loopback' => ['http://[::ffff:127.0.0.1]/x.png'];
+        yield 'ipv4 mapped private' => ['http://[::ffff:10.0.0.1]/x.png'];
+        yield 'ipv4 compatible loopback' => ['http://[::127.0.0.1]/x.png'];
+        yield 'ipv6 unique local' => ['http://[fc00::1]/x.png'];
+        yield 'ipv6 link local' => ['http://[fe80::1]/x.png'];
+        yield 'ipv6 multicast' => ['http://[ff02::1]/x.png'];
         yield 'file scheme' => ['file:///etc/passwd'];
         yield 'gopher scheme' => ['gopher://evil.example/x'];
         yield 'no scheme' => ['/etc/passwd'];
@@ -44,6 +54,7 @@ final class PublicUrlGuardTest extends TestCase
     {
         yield 'public ipv4' => ['http://8.8.8.8/photo.jpg'];
         yield 'public ipv4 https' => ['https://1.1.1.1/photo.jpg'];
+        yield 'public ipv6' => ['http://[2001:4860:4860::8888]/photo.jpg'];
     }
 
     #[DataProvider('allowedUrls')]

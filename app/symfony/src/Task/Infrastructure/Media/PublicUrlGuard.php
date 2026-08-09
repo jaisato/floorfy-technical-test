@@ -124,31 +124,46 @@ final class PublicUrlGuard
             return true;
         }
 
-        // IPv6: reject loopback, unique-local (fc00::/7), link-local
-        // (fe80::/10) and anything mapping onto a blocked IPv4 range.
+        // IPv6 is checked on the packed bytes, never on the text. The same
+        // address has many spellings - "::1" and "0:0:0:0:0:0:0:1" are the same
+        // host - so a string comparison misses every form but the one it was
+        // written for, and the caller chooses the spelling.
         $packed = @inet_pton($ip);
-        if ($packed === false) {
+        if ($packed === false || strlen($packed) !== 16) {
             return false;
         }
 
-        if ($ip === '::1' || $ip === '::') {
+        // Loopback ::1 and unspecified ::
+        if ($packed === str_repeat("\0", 15)."\1" || $packed === str_repeat("\0", 16)) {
             return false;
         }
 
         $first = ord($packed[0]);
+
+        // Unique-local fc00::/7
         if (($first & 0xFE) === 0xFC) {
             return false;
         }
+
+        // Link-local fe80::/10
         if ($first === 0xFE && (ord($packed[1]) & 0xC0) === 0x80) {
             return false;
         }
 
-        // ::ffff:a.b.c.d
-        if (str_starts_with(strtolower($ip), '::ffff:')) {
-            $mapped = substr($ip, 7);
+        // Multicast ff00::/8
+        if ($first === 0xFF) {
+            return false;
+        }
 
-            return filter_var($mapped, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
-                && $this->isPublic($mapped);
+        // IPv4-mapped ::ffff:a.b.c.d and IPv4-compatible ::a.b.c.d both carry an
+        // IPv4 address in the last four bytes; it has to face the IPv4 rules.
+        $isMapped = str_starts_with($packed, str_repeat("\0", 10)."\xFF\xFF");
+        $isCompatible = str_starts_with($packed, str_repeat("\0", 12));
+
+        if ($isMapped || $isCompatible) {
+            $embedded = inet_ntop(substr($packed, 12));
+
+            return is_string($embedded) && $this->isPublic($embedded);
         }
 
         return true;
