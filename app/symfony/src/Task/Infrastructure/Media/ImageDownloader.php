@@ -33,13 +33,26 @@ final class ImageDownloader
         $url = $imageUrl;
 
         for ($hop = 0; $hop <= self::MAX_REDIRECTS; $hop++) {
-            $this->urlGuard->assertFetchable($url);
+            $ip = $this->urlGuard->assertFetchable($url);
 
-            $response = $this->httpClient->request('GET', $url, [
+            $options = [
                 'max_redirects' => 0,
                 'timeout' => 30,
                 'max_duration' => 120,
-            ]);
+            ];
+
+            // Pin the connection to the address the guard just approved. Without
+            // this the client performs its own DNS lookup, and a hostname with a
+            // zero TTL can hand the guard a public address and the client a
+            // private one - DNS rebinding straight past the check. The hostname
+            // stays in the URL so Host, SNI and certificate validation are
+            // unaffected.
+            $host = parse_url($url, PHP_URL_HOST);
+            if (is_string($host) && filter_var(trim($host, '[]'), FILTER_VALIDATE_IP) === false) {
+                $options['resolve'] = [$host => $ip];
+            }
+
+            $response = $this->httpClient->request('GET', $url, $options);
 
             $status = $response->getStatusCode();
 
@@ -126,19 +139,85 @@ final class ImageDownloader
         return $root.'/'.implode('/', $segments);
     }
 
+    /**
+     * Resolves a Location header against the current URL following the
+     * URI-reference rules of RFC 3986 section 5.
+     *
+     * Treating every non-absolute Location as host-relative is wrong for the
+     * common cases: "next.jpg" sent from https://example.com/images/source
+     * belongs under /images/, "?page=2" keeps the current path, and
+     * "//cdn.example.com/x" is a different host, not a path.
+     */
     private function resolveLocation(string $currentUrl, string $location): string
     {
+        $location = trim($location);
+        $location = strtok($location, '#');
+        $location = $location === false ? '' : $location;
+
+        if ($location === '') {
+            return $currentUrl;
+        }
+
+        // Absolute URL.
         if (parse_url($location, PHP_URL_SCHEME) !== null) {
             return $location;
         }
 
-        $parts = parse_url($currentUrl);
-        $base = ($parts['scheme'] ?? 'https').'://'.($parts['host'] ?? '');
+        $base = parse_url($currentUrl);
+        $scheme = $base['scheme'] ?? 'https';
+        $authority = ($base['host'] ?? '').(isset($base['port']) ? ':'.$base['port'] : '');
 
-        if (isset($parts['port'])) {
-            $base .= ':'.$parts['port'];
+        // Protocol-relative: //host/path
+        if (str_starts_with($location, '//')) {
+            return $scheme.':'.$location;
         }
 
-        return $base.'/'.ltrim($location, '/');
+        // Absolute path.
+        if (str_starts_with($location, '/')) {
+            return $scheme.'://'.$authority.self::normalisePath($location);
+        }
+
+        $basePath = $base['path'] ?? '/';
+
+        // Query-only reference: keep the current path.
+        if (str_starts_with($location, '?')) {
+            return $scheme.'://'.$authority.$basePath.$location;
+        }
+
+        // Relative path: resolve against the directory of the current path.
+        $directory = substr($basePath, 0, (int) strrpos($basePath, '/') + 1);
+        if ($directory === '') {
+            $directory = '/';
+        }
+
+        return $scheme.'://'.$authority.self::normalisePath($directory.$location);
+    }
+
+    /** Collapses "." and ".." segments, per RFC 3986 section 5.2.4. */
+    private static function normalisePath(string $path): string
+    {
+        $query = '';
+        if (($pos = strpos($path, '?')) !== false) {
+            $query = substr($path, $pos);
+            $path = substr($path, 0, $pos);
+        }
+
+        $out = [];
+        foreach (explode('/', $path) as $segment) {
+            if ($segment === '.') {
+                continue;
+            }
+
+            if ($segment === '..') {
+                array_pop($out);
+                continue;
+            }
+
+            $out[] = $segment;
+        }
+
+        $resolved = implode('/', $out);
+
+        return ($resolved === '' ? '/' : $resolved).$query;
     }
 }

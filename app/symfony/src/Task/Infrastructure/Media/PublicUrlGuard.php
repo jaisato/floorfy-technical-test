@@ -35,8 +35,12 @@ final class PublicUrlGuard
         ['240.0.0.0', 4],
     ];
 
-    /** @throws BlockedUrl */
-    public function assertFetchable(string $url): void
+    /**
+     * @return string the validated address the caller must connect to
+     *
+     * @throws BlockedUrl
+     */
+    public function assertFetchable(string $url): string
     {
         $parts = parse_url($url);
 
@@ -50,12 +54,20 @@ final class PublicUrlGuard
         }
 
         $host = trim($parts['host'], '[]');
+        $ips = $this->resolve($host);
 
-        foreach ($this->resolve($host) as $ip) {
+        foreach ($ips as $ip) {
             if (!$this->isPublic($ip)) {
                 throw BlockedUrl::privateAddress($host, $ip);
             }
         }
+
+        // Returning the address matters: if the caller hands the *hostname* to
+        // an HTTP client, the client resolves it again, and a name served with
+        // a zero TTL can answer with a public address here and a private one
+        // there (DNS rebinding). The connection has to be pinned to an address
+        // that was actually checked.
+        return $ips[0];
     }
 
     /**

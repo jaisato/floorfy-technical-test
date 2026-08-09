@@ -53,4 +53,27 @@ final class PublicUrlGuardTest extends TestCase
 
         $this->addToAssertionCount(1);
     }
+
+    /**
+     * The caller has to connect to the address that was checked, not re-resolve
+     * the hostname: a name served with a zero TTL can answer with a public
+     * address here and a private one at connection time (DNS rebinding).
+     */
+    public function testReturnsTheValidatedAddressToPinTheConnectionTo(): void
+    {
+        $ip = (new PublicUrlGuard())->assertFetchable('http://8.8.8.8/photo.jpg');
+
+        self::assertSame('8.8.8.8', $ip);
+    }
+
+    public function testReturnedAddressIsAlwaysPublic(): void
+    {
+        $ip = (new PublicUrlGuard())->assertFetchable('https://1.1.1.1/photo.jpg');
+
+        self::assertNotFalse(filter_var($ip, FILTER_VALIDATE_IP));
+        self::assertFalse(
+            filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false,
+            'the guard must never hand back a private or reserved address',
+        );
+    }
 }
