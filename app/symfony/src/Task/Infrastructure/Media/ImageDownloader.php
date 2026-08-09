@@ -13,6 +13,14 @@ final class ImageDownloader
 {
     private const MAX_REDIRECTS = 5;
     private const MAX_BYTES = 50 * 1024 * 1024;
+    private const CONNECT_TIMEOUT_SECONDS = 30;
+
+    /**
+     * Wall-clock budget for the whole download, redirects and address retries
+     * included. Handing each attempt its own budget let one task hold a worker
+     * for addresses x redirects x budget.
+     */
+    private const MAX_TOTAL_SECONDS = 120;
 
     public function __construct(
         #[Autowire('%app.ffmpeg_work_dir%/task_images')]
@@ -33,11 +41,12 @@ final class ImageDownloader
         // permitted public URL is free to redirect to 169.254.169.254, and
         // letting the HTTP client follow it would defeat the guard entirely.
         $url = $imageUrl;
+        $deadline = microtime(true) + self::MAX_TOTAL_SECONDS;
 
         for ($hop = 0; $hop <= self::MAX_REDIRECTS; $hop++) {
             $ips = $this->urlGuard->assertFetchable($url);
 
-            $response = $this->requestPinnedToAValidatedAddress($url, $ips);
+            $response = $this->requestPinnedToAValidatedAddress($url, $ips, $deadline);
 
             $status = $response->getStatusCode();
 
@@ -79,19 +88,13 @@ final class ImageDownloader
      *
      * @param list<string> $ips
      */
-    private function requestPinnedToAValidatedAddress(string $url, array $ips): ResponseInterface
+    private function requestPinnedToAValidatedAddress(string $url, array $ips, float $deadline): ResponseInterface
     {
         $host = parse_url($url, PHP_URL_HOST);
         $needsPinning = is_string($host) && filter_var(trim($host, '[]'), FILTER_VALIDATE_IP) === false;
 
-        $options = [
-            'max_redirects' => 0,
-            'timeout' => 30,
-            'max_duration' => 120,
-        ];
-
         if (!$needsPinning) {
-            $response = $this->httpClient->request('GET', $url, $options);
+            $response = $this->httpClient->request('GET', $url, $this->budgetedOptions($deadline));
             $response->getStatusCode();
 
             return $response;
@@ -101,7 +104,8 @@ final class ImageDownloader
 
         foreach ($ips as $ip) {
             try {
-                $response = $this->httpClient->request('GET', $url, $options + ['resolve' => [$host => $ip]]);
+                $options = $this->budgetedOptions($deadline) + ['resolve' => [$host => $ip]];
+                $response = $this->httpClient->request('GET', $url, $options);
 
                 // Force the transport to connect now, so an unreachable address
                 // fails here and the next one gets its turn.
@@ -114,6 +118,27 @@ final class ImageDownloader
         }
 
         throw $lastError ?? new \RuntimeException('No se pudo conectar con ninguna dirección validada para '.$url);
+    }
+
+    /**
+     * Options carrying whatever is left of the shared budget, so retries and
+     * redirects cannot each start the clock again.
+     *
+     * @return array<string,mixed>
+     */
+    private function budgetedOptions(float $deadline): array
+    {
+        $remaining = $deadline - microtime(true);
+
+        if ($remaining <= 0) {
+            throw new \RuntimeException('Se agotó el tiempo máximo de descarga de la imagen.');
+        }
+
+        return [
+            'max_redirects' => 0,
+            'timeout' => min(self::CONNECT_TIMEOUT_SECONDS, $remaining),
+            'max_duration' => $remaining,
+        ];
     }
 
     private function streamToFile(ResponseInterface $response, string $dst): void
@@ -210,8 +235,15 @@ final class ImageDownloader
     private function resolveLocation(string $currentUrl, string $location): string
     {
         $location = trim($location);
-        $location = strtok($location, '#');
-        $location = $location === false ? '' : $location;
+
+        // Position-based, not strtok(): strtok skips leading delimiters, so a
+        // fragment-only "#frag" came back as "frag" and was followed as a
+        // sibling path. A fragment-only reference keeps the current URL, and
+        // fragments are never sent in the request anyway.
+        $hash = strpos($location, '#');
+        if ($hash !== false) {
+            $location = substr($location, 0, $hash);
+        }
 
         if ($location === '') {
             return $currentUrl;
