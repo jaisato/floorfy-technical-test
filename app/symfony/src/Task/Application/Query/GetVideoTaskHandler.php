@@ -19,7 +19,16 @@ final class GetVideoTaskHandler
 
     public function __invoke(GetVideoTaskQuery $query): ?VideoTaskView
     {
-        $id = UuidValue::fromString($query->taskId);
+        // GET /api/tasks/{id} takes the id straight from the URL. fromString()
+        // throws on anything that is not a UUID, Messenger wraps that, and the
+        // controller - which does know how to answer 404 - never saw it: a typo
+        // in the path came back as a 500. An id that cannot name a task is a
+        // task that does not exist.
+        $id = UuidValue::tryFromString($query->taskId);
+        if ($id === null) {
+            return null;
+        }
+
         $task = $this->tasks->get($id);
         if ($task === null) {
             return null;
