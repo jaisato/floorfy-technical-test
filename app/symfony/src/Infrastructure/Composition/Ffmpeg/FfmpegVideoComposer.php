@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace App\Infrastructure\Composition\Ffmpeg;
 
 use App\Composition\Domain\Port\VideoComposer;
+use App\Task\Infrastructure\Media\PublicUrlGuard;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Process\Process;
 
@@ -11,6 +12,7 @@ final class FfmpegVideoComposer implements VideoComposer
 {
     public function __construct(
         private string $workDir,
+        private readonly PublicUrlGuard $urlGuard = new PublicUrlGuard(),
     ) {}
 
     public function compose(array $videoUrls, string $outputBasename): string
@@ -69,7 +71,31 @@ final class FfmpegVideoComposer implements VideoComposer
             return;
         }
 
-        $cmd = ['curl', '-L', '-f', '-sS', $url, '-o', $dstFile];
+        // Everything ProcessVideoTaskHandler passes today is a file:// path this
+        // application wrote itself, so this branch is currently unreachable -
+        // but the port is declared as taking "videoUrls" and this class ships a
+        // full HTTP fetch, so it is one caller away from being reachable. Left
+        // as it was, that fetch was a plain `curl -L` against whatever it was
+        // given: no scheme restriction, no address check, and redirects followed
+        // by curl itself, which is exactly the server-side request forgery
+        // primitive PublicUrlGuard exists to deny. ImageDownloader - the path
+        // that does take URLs from the public API - has been going through the
+        // guard all along; this one never did.
+        //
+        // Checking it here costs one DNS resolution on a branch nothing calls,
+        // and means the guard cannot be bypassed simply by reaching the composer
+        // instead of the downloader.
+        $this->urlGuard->assertFetchable($url);
+
+        // --proto and --location-trusted's absence matter alongside the guard:
+        // curl follows redirects itself, so a permitted public URL answering
+        // 302 to http://169.254.169.254/ would otherwise be fetched without any
+        // further check. Restricting the protocols curl will redirect *to* keeps
+        // it on http/https - it cannot be sent to file:// or gopher:// - and the
+        // guard still cannot see the redirect target, so this branch stays
+        // deliberately narrow. A caller that genuinely needs remote video should
+        // reuse ImageDownloader's per-hop revalidation rather than widen this.
+        $cmd = ['curl', '-L', '--proto', '=http,https', '--proto-redir', '=http,https', '-f', '-sS', $url, '-o', $dstFile];
         $proc = new Process($cmd);
         $proc->setTimeout(120);
         $proc->run();
@@ -79,6 +105,11 @@ final class FfmpegVideoComposer implements VideoComposer
         }
     }
 
+    /**
+     * Maps an input to a file on this machine, or null when it has to be fetched.
+     *
+     * @throws \RuntimeException when a site-relative path escapes the public directory
+     */
     private function resolveLocalPath(string $url): ?string
     {
         if (str_starts_with($url, 'file://')) {
@@ -88,6 +119,19 @@ final class FfmpegVideoComposer implements VideoComposer
         }
 
         $parts = @parse_url($url);
+
+        // A remote URL is a remote URL. Every http(s) URL used to fall through
+        // to the branch below, which took its *path component* and joined it
+        // onto the public directory - so "https://example.com/a.mp4" quietly
+        // served /var/www/html/public/a.mp4 rather than fetching anything, and
+        // "https://example.com/../../etc/passwd" resolved clean outside that
+        // directory, copying whatever the process could read into a video part.
+        // The HTTP branch below was therefore near-dead by accident, which is
+        // also why nothing noticed it had no address check.
+        if (isset($parts['scheme'])) {
+            return null;
+        }
+
         $path = $parts['path'] ?? null;
 
         if ($path === null) {
@@ -95,7 +139,23 @@ final class FfmpegVideoComposer implements VideoComposer
         }
 
         $publicDir = rtrim((string) (getenv('APP_PUBLIC_DIR') ?: '/var/www/html/public'), '/');
+        $candidate = $publicDir.'/'.ltrim($path, '/');
 
-        return $publicDir . $path;
+        // "/videos/../../etc/passwd" is still a site-relative path, so the join
+        // has to be checked rather than trusted. Compared after realpath() so
+        // that symlinks out of the directory are caught too; the file existing
+        // is a precondition of that check, and download() reports a missing one.
+        $root = realpath($publicDir);
+        $resolved = realpath($candidate);
+
+        if ($resolved === false || $root === false) {
+            return $candidate;
+        }
+
+        if ($resolved !== $root && !str_starts_with($resolved, $root.\DIRECTORY_SEPARATOR)) {
+            throw new \RuntimeException(sprintf('Ruta fuera del directorio público: "%s".', $url));
+        }
+
+        return $resolved;
     }
 }
