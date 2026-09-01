@@ -85,24 +85,74 @@ final class FfmpegVideoComposer implements VideoComposer
         // Checking it here costs one DNS resolution on a branch nothing calls,
         // and means the guard cannot be bypassed simply by reaching the composer
         // instead of the downloader.
-        $this->urlGuard->assertFetchable($url);
+        $ips = $this->urlGuard->assertFetchable($url);
 
-        // --proto and --location-trusted's absence matter alongside the guard:
-        // curl follows redirects itself, so a permitted public URL answering
-        // 302 to http://169.254.169.254/ would otherwise be fetched without any
-        // further check. Restricting the protocols curl will redirect *to* keeps
-        // it on http/https - it cannot be sent to file:// or gopher:// - and the
-        // guard still cannot see the redirect target, so this branch stays
-        // deliberately narrow. A caller that genuinely needs remote video should
-        // reuse ImageDownloader's per-hop revalidation rather than widen this.
-        $cmd = ['curl', '-L', '--proto', '=http,https', '--proto-redir', '=http,https', '-f', '-sS', $url, '-o', $dstFile];
-        $proc = new Process($cmd);
+        $proc = new Process($this->curlCommand($url, $ips, $dstFile));
         $proc->setTimeout(120);
         $proc->run();
 
         if (!$proc->isSuccessful()) {
             throw new \RuntimeException('No se pudo descargar vídeo: ' . $proc->getErrorOutput());
         }
+    }
+
+    /**
+     * Builds the curl invocation for a URL the guard has just approved.
+     *
+     * Two things the guard cannot do on its own, both of which used to be left
+     * open here:
+     *
+     * - **Redirects.** The guard validates the URL it is given, and nothing
+     *   else. curl follows redirects by itself, so a permitted public URL
+     *   answering `302 Location: http://169.254.169.254/` was fetched with no
+     *   further check - the exact request forgery the guard exists to deny.
+     *   `--proto-redir` does not help: it restricts which *protocols* a redirect
+     *   may use, never which addresses. So redirects are not followed at all.
+     *   `-L` with `--max-redirs 0` makes curl fail loudly (exit 47) instead of
+     *   silently writing a 3xx body into the output file, which is what
+     *   dropping `-L` would do.
+     * - **DNS rebinding.** assertFetchable() returns the addresses it checked
+     *   precisely so the caller connects to one of them; handing curl the
+     *   hostname instead lets it resolve again, and a name served with a zero
+     *   TTL can answer publicly for the guard and privately for the transfer.
+     *   `--resolve` pins the connection to the validated addresses while
+     *   leaving the hostname in the URL, so Host, SNI and certificate
+     *   validation are untouched.
+     *
+     * A URL that genuinely needs redirects should go through
+     * ImageDownloader, which revalidates every hop, rather than loosening this.
+     *
+     * @param list<string> $ips addresses the guard validated, in resolution order
+     *
+     * @return list<string>
+     */
+    private function curlCommand(string $url, array $ips, string $dstFile): array
+    {
+        $cmd = ['curl', '-L', '--max-redirs', '0', '--proto', '=http,https', '--proto-redir', '=http,https'];
+
+        $host = parse_url($url, PHP_URL_HOST);
+
+        // A URL that already names an address has nothing to re-resolve, so
+        // there is nothing to pin - the guard checked that literal.
+        if (is_string($host) && $ips !== [] && filter_var(trim($host, '[]'), FILTER_VALIDATE_IP) === false) {
+            $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+            $port = parse_url($url, PHP_URL_PORT) ?: ($scheme === 'http' ? 80 : 443);
+
+            // curl takes several addresses for one host:port as a comma-separated
+            // list, and fails over between them the way it would across a host's
+            // own A/AAAA records. IPv6 literals go in brackets.
+            $addresses = array_map(
+                static fn (string $ip): string => str_contains($ip, ':') ? '['.$ip.']' : $ip,
+                $ips
+            );
+
+            $cmd[] = '--resolve';
+            $cmd[] = sprintf('%s:%d:%s', $host, $port, implode(',', $addresses));
+        }
+
+        array_push($cmd, '-f', '-sS', $url, '-o', $dstFile);
+
+        return $cmd;
     }
 
     /**
