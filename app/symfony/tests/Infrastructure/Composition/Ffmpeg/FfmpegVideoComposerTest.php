@@ -107,6 +107,20 @@ final class FfmpegVideoComposerTest extends TestCase
         self::assertContains('https://example.com/a.mp4', $cmd);
     }
 
+    /**
+     * curl treats http_proxy / HTTPS_PROXY / ALL_PROXY exactly like --proxy,
+     * and a proxied request goes to the proxy, which resolves the hostname
+     * itself - so --resolve is ignored and the guard's address check buys
+     * nothing. The fetch has to be direct for the pin to mean anything.
+     */
+    public function testTheFetchIgnoresAnyProxyInTheEnvironment(): void
+    {
+        $cmd = $this->curlCommand('https://example.com/a.mp4', ['93.184.216.34']);
+
+        self::assertContains('--noproxy', $cmd);
+        self::assertSame('*', $cmd[array_search('--noproxy', $cmd, true) + 1]);
+    }
+
     public function testAnExplicitPortIsCarriedIntoThePin(): void
     {
         $cmd = $this->curlCommand('http://example.com:8080/a.mp4', ['93.184.216.34']);

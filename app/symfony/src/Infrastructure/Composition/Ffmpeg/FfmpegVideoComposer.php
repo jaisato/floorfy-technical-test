@@ -122,13 +122,23 @@ final class FfmpegVideoComposer implements VideoComposer
      * A URL that genuinely needs redirects should go through
      * ImageDownloader, which revalidates every hop, rather than loosening this.
      *
+     * `--noproxy '*'` is what makes the pin mean anything. curl treats
+     * `http_proxy` / `HTTPS_PROXY` / `ALL_PROXY` in the environment exactly like
+     * `--proxy`, and a proxied request is sent to the proxy, which resolves the
+     * hostname itself - so `--resolve` is ignored entirely and an
+     * attacker-controlled name can rebind to an internal address at the proxy.
+     * Verified: with `http_proxy` set, the same command connected to the proxy
+     * rather than the pinned address; with `--noproxy '*'` it connected to the
+     * pinned address. This fetch is guarded precisely because the destination
+     * has been checked, so it has to go there directly.
+     *
      * @param list<string> $ips addresses the guard validated, in resolution order
      *
      * @return list<string>
      */
     private function curlCommand(string $url, array $ips, string $dstFile): array
     {
-        $cmd = ['curl', '-L', '--max-redirs', '0', '--proto', '=http,https', '--proto-redir', '=http,https'];
+        $cmd = ['curl', '-L', '--max-redirs', '0', '--proto', '=http,https', '--proto-redir', '=http,https', '--noproxy', '*'];
 
         $host = parse_url($url, PHP_URL_HOST);
 
