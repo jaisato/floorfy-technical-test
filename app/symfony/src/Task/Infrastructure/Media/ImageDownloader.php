@@ -1,41 +1,43 @@
 <?php
+
 declare(strict_types=1);
 
 namespace App\Task\Infrastructure\Media;
 
-use Symfony\Component\DependencyInjection\Attribute\Autowire;
-use Symfony\Component\Filesystem\Filesystem;
+use App\Task\Domain\Port\ImageFetcher;
 use Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
-final class ImageDownloader
+final readonly class ImageDownloader implements ImageFetcher
 {
-    private const MAX_REDIRECTS = 5;
-    private const MAX_BYTES = 50 * 1024 * 1024;
-    private const CONNECT_TIMEOUT_SECONDS = 30;
+    public const int DEFAULT_MAX_BYTES = 50 * 1024 * 1024;
+
+    private const int MAX_REDIRECTS = 5;
+    private const int CONNECT_TIMEOUT_SECONDS = 30;
 
     /**
      * Wall-clock budget for the whole download, redirects and address retries
      * included. Handing each attempt its own budget let one task hold a worker
      * for addresses x redirects x budget.
      */
-    private const MAX_TOTAL_SECONDS = 120;
+    private const int MAX_TOTAL_SECONDS = 120;
+
+    private string $imagesDir;
 
     public function __construct(
-        #[Autowire('%app.ffmpeg_work_dir%/task_images')]
-        private readonly string $workDir,
-        private readonly HttpClientInterface $httpClient,
-        private readonly PublicUrlGuard $urlGuard = new PublicUrlGuard(),
-    ) {}
+        string $workDir,
+        private HttpClientInterface $httpClient,
+        private PublicUrlGuard $urlGuard = new PublicUrlGuard(),
+        private int $maxBytes = self::DEFAULT_MAX_BYTES,
+    ) {
+        $this->imagesDir = rtrim($workDir, '/').'/images';
+    }
 
-    public function download(string $imageUrl, string $basename): string
+    public function fetch(string $imageUrl, string $relativeName): string
     {
-        $fs = new Filesystem();
-        $fs->mkdir($this->workDir);
-
-        $dst = $this->safeDestination($basename);
-        $fs->mkdir(\dirname($dst));
+        $destination = $this->safeDestination($relativeName);
+        self::ensureDirectory(\dirname($destination));
 
         // Redirects are followed by hand so that every hop is re-checked: a
         // permitted public URL is free to redirect to 169.254.169.254, and
@@ -43,7 +45,7 @@ final class ImageDownloader
         $url = $imageUrl;
         $deadline = microtime(true) + self::MAX_TOTAL_SECONDS;
 
-        for ($hop = 0; $hop <= self::MAX_REDIRECTS; $hop++) {
+        for ($hop = 0; $hop <= self::MAX_REDIRECTS; ++$hop) {
             // Checked before the guard, not after: assertFetchable() resolves
             // DNS, and a hop that starts with no budget left would otherwise
             // block in the resolver before anything noticed the deadline.
@@ -58,7 +60,7 @@ final class ImageDownloader
             if ($status >= 300 && $status < 400) {
                 $location = $response->getHeaders(false)['location'][0] ?? null;
 
-                if ($location === null) {
+                if (null === $location) {
                     throw new \RuntimeException('Redirección sin cabecera Location al descargar la imagen.');
                 }
 
@@ -71,20 +73,26 @@ final class ImageDownloader
             // be 200. A transforming proxy answering 203, or a 206 from a range
             // request, still delivers the image.
             if ($status < 200 || $status >= 300) {
-                throw new \RuntimeException(sprintf('No se pudo descargar la imagen: HTTP %d', $status));
+                throw new \RuntimeException(\sprintf('No se pudo descargar la imagen: HTTP %d', $status));
             }
 
-            $written = $this->streamToFile($response, $dst);
+            $headers = $response->getHeaders(false);
+            self::assertAdvertisedTypeIsAnImage($headers);
+            $this->assertAdvertisedSizeFits($headers);
+
+            $written = $this->streamToFile($response, $destination);
 
             // 204/205, or any 2xx with nothing behind it, would otherwise leave
             // a zero-byte file that ffmpeg later fails on for no clear reason.
-            if ($written === 0) {
-                @unlink($dst);
+            if (0 === $written) {
+                @unlink($destination);
 
-                throw new \RuntimeException(sprintf('La respuesta HTTP %d no contenía imagen alguna.', $status));
+                throw new \RuntimeException(\sprintf('La respuesta HTTP %d no contenía imagen alguna.', $status));
             }
 
-            return $dst;
+            $this->assertContentIsAnImage($destination);
+
+            return $destination;
         }
 
         throw BlockedUrl::tooManyRedirects($imageUrl);
@@ -107,8 +115,8 @@ final class ImageDownloader
      */
     private function requestPinnedToAValidatedAddress(string $url, array $ips, float $deadline): ResponseInterface
     {
-        $host = parse_url($url, PHP_URL_HOST);
-        $needsPinning = is_string($host) && filter_var(trim($host, '[]'), FILTER_VALIDATE_IP) === false;
+        $host = parse_url($url, \PHP_URL_HOST);
+        $needsPinning = \is_string($host) && false === filter_var(trim($host, '[]'), \FILTER_VALIDATE_IP);
 
         if (!$needsPinning) {
             $response = $this->httpClient->request('GET', $url, $this->budgetedOptions($deadline));
@@ -154,13 +162,76 @@ final class ImageDownloader
         ];
     }
 
-    /** @return int bytes written */
-    private function streamToFile(ResponseInterface $response, string $dst): int
+    /**
+     * @param array<string, list<string>> $headers
+     */
+    private static function assertAdvertisedTypeIsAnImage(array $headers): void
     {
-        $handle = fopen($dst, 'wb');
+        $contentType = $headers['content-type'][0] ?? null;
 
-        if ($handle === false) {
-            throw new \RuntimeException('No se pudo escribir la imagen en disco: '.$dst);
+        // A missing Content-Type is not proof of anything either way; the sniff
+        // after the body has been written is what actually decides.
+        if (null === $contentType) {
+            return;
+        }
+
+        $mediaType = strtolower(trim(explode(';', $contentType)[0]));
+
+        // application/octet-stream is what an object store serves when nobody
+        // set a type on the upload, and refusing it would reject a large share
+        // of perfectly good image URLs. It says "unknown bytes", so it is left
+        // to the sniff rather than trusted or rejected on the spot.
+        if (str_starts_with($mediaType, 'image/') || 'application/octet-stream' === $mediaType) {
+            return;
+        }
+
+        throw BlockedUrl::notAnImage($mediaType);
+    }
+
+    /**
+     * Refuses an oversized body before a single byte of it is read. The
+     * streaming cap still applies - Content-Length is a claim, not a fact - but
+     * an honest server is taken at its word and the transfer never starts.
+     *
+     * @param array<string, list<string>> $headers
+     */
+    private function assertAdvertisedSizeFits(array $headers): void
+    {
+        $length = $headers['content-length'][0] ?? null;
+
+        if (null === $length || 1 !== preg_match('/^\d+$/', $length)) {
+            return;
+        }
+
+        if ((int) $length > $this->maxBytes) {
+            throw BlockedUrl::tooLarge($this->maxBytes);
+        }
+    }
+
+    /**
+     * What was actually written decides, not what the server said it was
+     * sending: the file is about to be handed to ffmpeg.
+     */
+    private function assertContentIsAnImage(string $file): void
+    {
+        $mediaType = @mime_content_type($file);
+
+        if (\is_string($mediaType) && str_starts_with($mediaType, 'image/')) {
+            return;
+        }
+
+        @unlink($file);
+
+        throw BlockedUrl::notAnImage(\is_string($mediaType) ? $mediaType : '');
+    }
+
+    /** @return int bytes written */
+    private function streamToFile(ResponseInterface $response, string $destination): int
+    {
+        $handle = fopen($destination, 'w');
+
+        if (false === $handle) {
+            throw new \RuntimeException('No se pudo escribir la imagen en disco: '.$destination);
         }
 
         $written = 0;
@@ -169,14 +240,14 @@ final class ImageDownloader
             foreach ($this->httpClient->stream($response) as $chunk) {
                 $content = $chunk->getContent();
 
-                if ($content === '') {
+                if ('' === $content) {
                     continue;
                 }
 
                 $written += \strlen($content);
 
-                if ($written > self::MAX_BYTES) {
-                    throw BlockedUrl::tooLarge(self::MAX_BYTES);
+                if ($written > $this->maxBytes) {
+                    throw BlockedUrl::tooLarge($this->maxBytes);
                 }
 
                 // fwrite() returns false on failure and can report a short write
@@ -186,7 +257,7 @@ final class ImageDownloader
             }
         } catch (\Throwable $e) {
             fclose($handle);
-            @unlink($dst);
+            @unlink($destination);
 
             throw $e;
         }
@@ -207,7 +278,7 @@ final class ImageDownloader
         while ($offset < $length) {
             $bytes = fwrite($handle, substr($content, $offset));
 
-            if ($bytes === false || $bytes === 0) {
+            if (false === $bytes || 0 === $bytes) {
                 throw new \RuntimeException('No se pudo escribir la imagen completa en disco.');
             }
 
@@ -235,24 +306,24 @@ final class ImageDownloader
     }
 
     /**
-     * Keeps the download inside the work directory: a basename containing
-     * "../" would otherwise write anywhere the process can reach.
+     * Keeps the download inside the work directory: a name containing "../"
+     * would otherwise write anywhere the process can reach.
      */
-    private function safeDestination(string $basename): string
+    private function safeDestination(string $relativeName): string
     {
-        $root = rtrim($this->workDir, '/');
-        $relative = ltrim(str_replace('\\', '/', $basename), '/');
+        $root = rtrim($this->imagesDir, '/');
+        $relative = ltrim(str_replace('\\', '/', $relativeName), '/');
 
         $segments = [];
         foreach (explode('/', $relative) as $segment) {
-            if ($segment === '' || $segment === '.' || $segment === '..') {
+            if ('' === $segment || '.' === $segment || '..' === $segment) {
                 continue;
             }
             $segments[] = $segment;
         }
 
-        if ($segments === []) {
-            throw new \RuntimeException('Nombre de fichero de imagen inválido: '.$basename);
+        if ([] === $segments) {
+            throw new \RuntimeException('Nombre de fichero de imagen inválido: '.$relativeName);
         }
 
         return $root.'/'.implode('/', $segments);
@@ -276,21 +347,22 @@ final class ImageDownloader
         // sibling path. A fragment-only reference keeps the current URL, and
         // fragments are never sent in the request anyway.
         $hash = strpos($location, '#');
-        if ($hash !== false) {
+        if (false !== $hash) {
             $location = substr($location, 0, $hash);
         }
 
-        if ($location === '') {
+        if ('' === $location) {
             return $currentUrl;
         }
 
         // Absolute URL.
-        if (parse_url($location, PHP_URL_SCHEME) !== null) {
+        if (null !== parse_url($location, \PHP_URL_SCHEME)) {
             return $location;
         }
 
         $base = parse_url($currentUrl);
-        $scheme = $base['scheme'] ?? 'https';
+        $base = \is_array($base) ? $base : [];
+        $scheme = \is_string($base['scheme'] ?? null) ? $base['scheme'] : 'https';
 
         // The authority includes userinfo. Rebuilding it from host and port
         // alone silently drops the credentials in
@@ -313,7 +385,7 @@ final class ImageDownloader
             return $scheme.'://'.$authority.self::normalisePath($location);
         }
 
-        $basePath = $base['path'] ?? '/';
+        $basePath = \is_string($base['path'] ?? null) ? $base['path'] : '/';
 
         // Query-only reference: keep the current path.
         if (str_starts_with($location, '?')) {
@@ -322,7 +394,7 @@ final class ImageDownloader
 
         // Relative path: resolve against the directory of the current path.
         $directory = substr($basePath, 0, (int) strrpos($basePath, '/') + 1);
-        if ($directory === '') {
+        if ('' === $directory) {
             $directory = '/';
         }
 
@@ -339,12 +411,12 @@ final class ImageDownloader
         }
 
         $segments = explode('/', $path);
-        $lastIndex = count($segments) - 1;
+        $lastIndex = \count($segments) - 1;
         $out = [];
 
         foreach ($segments as $index => $segment) {
-            if ($segment === '.' || $segment === '..') {
-                if ($segment === '..' && count($out) > 1) {
+            if ('.' === $segment || '..' === $segment) {
+                if ('..' === $segment && \count($out) > 1) {
                     array_pop($out);
                 }
 
@@ -365,6 +437,13 @@ final class ImageDownloader
 
         $resolved = implode('/', $out);
 
-        return ($resolved === '' ? '/' : $resolved).$query;
+        return ('' === $resolved ? '/' : $resolved).$query;
+    }
+
+    private static function ensureDirectory(string $directory): void
+    {
+        if (!is_dir($directory) && !@mkdir($directory, 0o775, true) && !is_dir($directory)) {
+            throw new \RuntimeException(\sprintf('No se pudo crear el directorio "%s".', $directory));
+        }
     }
 }

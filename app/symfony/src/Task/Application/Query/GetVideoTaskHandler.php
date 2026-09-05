@@ -1,21 +1,28 @@
 <?php
+
 declare(strict_types=1);
 
 namespace App\Task\Application\Query;
 
 use App\Shared\Domain\ValueObject\UuidValue;
+use App\Task\Application\DTO\PartialVideoView;
 use App\Task\Application\DTO\VideoTaskView;
+use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Port\PartialVideoRepository;
 use App\Task\Domain\Port\VideoTaskRepository;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 
 #[AsMessageHandler(bus: 'messenger.bus.query')]
-final class GetVideoTaskHandler
+final readonly class GetVideoTaskHandler
 {
     public function __construct(
         private VideoTaskRepository $tasks,
         private PartialVideoRepository $partials,
-    ) {}
+        #[Autowire(param: 'app.public_base_url')]
+        private string $publicBaseUrl,
+    ) {
+    }
 
     public function __invoke(GetVideoTaskQuery $query): ?VideoTaskView
     {
@@ -25,29 +32,40 @@ final class GetVideoTaskHandler
         // in the path came back as a 500. An id that cannot name a task is a
         // task that does not exist.
         $id = UuidValue::tryFromString($query->taskId);
-        if ($id === null) {
+
+        if (null === $id) {
             return null;
         }
 
         $task = $this->tasks->get($id);
-        if ($task === null) {
-            return null;
-        }
 
-        $partials = $this->partials->listByTaskId($id);
-        $partialViews = [];
-        foreach ($partials as $partial) {
-            $partialViews[] = [
-                'image_url' => $partial->imageUrl(),
-                'status' => $partial->status()->value,
-            ];
+        if (null === $task) {
+            return null;
         }
 
         return new VideoTaskView(
             $task->id()->value,
             $task->status()->value,
-            $partialViews,
+            array_map(
+                $this->toView(...),
+                $this->partials->listByTaskId($id),
+            ),
             $task->finalVideoUrl(),
+            $task->errorMessage(),
+        );
+    }
+
+    private function toView(PartialVideo $partial): PartialVideoView
+    {
+        $path = $partial->videoPath();
+
+        return new PartialVideoView(
+            $partial->id()->value,
+            $partial->imageUrl(),
+            $partial->transition()->value,
+            $partial->status()->value,
+            null === $path ? null : rtrim($this->publicBaseUrl, '/').$path,
+            $partial->errorMessage(),
         );
     }
 }

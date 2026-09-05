@@ -1,119 +1,128 @@
 <?php
+
 declare(strict_types=1);
 
 namespace App\Ui\Http\Controller;
 
 use App\Task\Application\Command\CreateVideoTaskCommand;
-use App\Task\Application\Query\GetVideoTaskQuery;
 use App\Task\Application\DTO\VideoTaskView;
+use App\Task\Application\Query\GetVideoTaskQuery;
 use App\Ui\Http\Request\CreateTaskRequest;
-use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Attribute\AsController;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\Messenger\Stamp\HandledStamp;
 use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Routing\Requirement\Requirement;
 use Symfony\Component\Validator\ConstraintViolationListInterface;
 use Symfony\Component\Validator\Validator\ValidatorInterface;
 
-final class TaskController extends AbstractController
+#[AsController]
+#[Route('/api/tasks')]
+final readonly class TaskController
 {
     public function __construct(
-        private readonly MessageBusInterface $commandBus,
-        private readonly MessageBusInterface $queryBus,
-        private readonly ValidatorInterface $validator,
-    ) {}
+        private MessageBusInterface $commandBus,
+        private MessageBusInterface $queryBus,
+        private ValidatorInterface $validator,
+    ) {
+    }
 
-    #[Route('/api/tasks', methods: ['POST'])]
+    #[Route('', name: 'api_tasks_create', methods: ['POST'])]
     public function create(Request $request): JsonResponse
     {
         $payload = json_decode($request->getContent(), true);
-        if (!is_array($payload)) {
-            return $this->badRequest('Invalid JSON payload');
+
+        if (!\is_array($payload)) {
+            return self::error('Invalid JSON payload', Response::HTTP_BAD_REQUEST);
         }
 
         $dto = CreateTaskRequest::fromArray($payload);
-        $errors = $this->validator->validate($dto);
-        if (count($errors) > 0) {
-            return $this->validationBadRequest($errors);
+        $violations = $this->validator->validate($dto);
+
+        if (\count($violations) > 0) {
+            return self::validationFailed($violations);
         }
 
-        $images = [];
-        foreach ($dto->images as $img) {
-            $images[] = [
-                'url' => (string) $img['url'],
-                'transition' => (string) $img['transition'],
-            ];
-        }
-
-        $envelope = $this->commandBus->dispatch(new CreateVideoTaskCommand(
-            $images,
-            $payload,
-        ));
-
+        // The command carries what was validated, not the body that arrived:
+        // persisting the raw payload stored unvalidated extra fields and left
+        // the stored images out of step with the ones actually queued.
+        $envelope = $this->commandBus->dispatch(new CreateVideoTaskCommand($dto->toImageList()));
         $taskId = $envelope->last(HandledStamp::class)?->getResult();
 
-        return new JsonResponse([
-            'task_id' => $taskId,
-            'status' => 'pending',
-        ], 201);
+        if (!\is_string($taskId)) {
+            // A 201 whose body says "task_id": null is worse than an error: the
+            // client has nothing to poll and no reason to retry.
+            return self::error('The task could not be created', Response::HTTP_INTERNAL_SERVER_ERROR);
+        }
+
+        return new JsonResponse(['task_id' => $taskId, 'status' => 'pending'], Response::HTTP_CREATED);
     }
 
-    #[Route('/api/tasks/{id}', methods: ['GET'])]
+    #[Route('/{id}', name: 'api_tasks_get', requirements: ['id' => Requirement::UUID], methods: ['GET'])]
     public function get(string $id): JsonResponse
     {
-        $envelope = $this->queryBus->dispatch(new GetVideoTaskQuery($id));
-        /** @var VideoTaskView|null $view */
-        $view = $envelope->last(HandledStamp::class)?->getResult();
+        $view = $this->view($id);
 
-        if ($view === null) {
-            return new JsonResponse(['error' => 'Not found'], 404);
+        if (null === $view) {
+            return self::notFound();
         }
 
         return new JsonResponse([
             'task_id' => $view->taskId,
             'status' => $view->status,
-            'partial_videos' => $view->partialVideos,
-        ], 200);
+            'error' => $view->error,
+            'partial_videos' => $view->partialVideosAsArray(),
+        ]);
     }
 
-    #[Route('/api/tasks/{id}/final', methods: ['GET'])]
+    #[Route('/{id}/final', name: 'api_tasks_final', requirements: ['id' => Requirement::UUID], methods: ['GET'])]
     public function final(string $id): JsonResponse
     {
-        $envelope = $this->queryBus->dispatch(new GetVideoTaskQuery($id));
-        /** @var VideoTaskView|null $view */
-        $view = $envelope->last(HandledStamp::class)?->getResult();
+        $view = $this->view($id);
 
-        if ($view === null) {
-            return new JsonResponse(['error' => 'Not found'], 404);
+        if (null === $view) {
+            return self::notFound();
         }
 
         return new JsonResponse([
             'task_id' => $view->taskId,
             'status' => $view->status,
             'final_video_url' => $view->finalVideoUrl,
-        ], 200);
+        ]);
     }
 
-    private function badRequest(string $message, array $context = []): JsonResponse
+    private function view(string $id): ?VideoTaskView
     {
-        return new JsonResponse([
-            'error' => $message,
-            'context' => $context,
-        ], 400);
+        $result = $this->queryBus->dispatch(new GetVideoTaskQuery($id))->last(HandledStamp::class)?->getResult();
+
+        return $result instanceof VideoTaskView ? $result : null;
     }
 
-    private function validationBadRequest(ConstraintViolationListInterface $violations): JsonResponse
+    private static function notFound(): JsonResponse
+    {
+        return self::error('Task not found', Response::HTTP_NOT_FOUND);
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    private static function error(string $message, int $status, array $context = []): JsonResponse
+    {
+        return new JsonResponse(['error' => $message] + ([] === $context ? [] : ['context' => $context]), $status);
+    }
+
+    private static function validationFailed(ConstraintViolationListInterface $violations): JsonResponse
     {
         $errors = [];
+
         foreach ($violations as $violation) {
             $field = (string) $violation->getPropertyPath();
-            if ($field === '') {
-                $field = 'payload';
-            }
-            $errors[$field][] = $violation->getMessage();
+            $errors['' === $field ? 'payload' : $field][] = (string) $violation->getMessage();
         }
 
-        return $this->badRequest('Validation failed', ['violations' => $errors]);
+        return self::error('Validation failed', Response::HTTP_BAD_REQUEST, ['violations' => $errors]);
     }
 }

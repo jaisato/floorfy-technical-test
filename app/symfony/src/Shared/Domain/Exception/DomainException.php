@@ -1,10 +1,9 @@
 <?php
+
 declare(strict_types=1);
 
 namespace App\Shared\Domain\Exception;
 
-use RuntimeException;
-
-class DomainException extends RuntimeException
+class DomainException extends \RuntimeException implements ClientSafe
 {
 }
