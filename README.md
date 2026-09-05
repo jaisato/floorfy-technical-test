@@ -151,7 +151,7 @@ Puntos que merece la pena conocer:
 - `transition`: `pan`, `zoom_in` o `zoom_out`.
 - Máximo 20 imágenes por tarea; `url` hasta 2048 caracteres.
 - **201** `{"task_id": "...", "status": "pending"}`
-- **400** `{"error": "Validation failed", "context": {"violations": {...}}}`
+- **400** un documento `application/problem+json` (ver [Errores](#errores)).
 
 ### `GET /api/tasks/{id}`
 
@@ -183,6 +183,24 @@ Estados — tarea: `pending | processing | completed | failed`; parte:
 ```
 
 **404** en ambos `GET` si la tarea no existe (o si el id no es un UUID).
+
+### Errores
+
+Un único contrato para toda la API, venga el error de un controlador, del router
+o de una excepción no prevista: `application/problem+json` (RFC 9457).
+
+```json
+{
+  "type": "about:blank",
+  "title": "Bad Request",
+  "status": 400,
+  "detail": "La petición no supera la validación.",
+  "violations": { "images[0].url": ["This value is not a valid URL."] }
+}
+```
+
+El cuerpo **nunca** lleva el mensaje de una excepción inesperada — ahí es donde
+un driver pone el host al que no pudo conectar —: eso va al log.
 
 ### Vídeos
 

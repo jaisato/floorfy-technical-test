@@ -8,6 +8,7 @@ use App\Task\Application\Command\CreateVideoTaskCommand;
 use App\Task\Application\DTO\VideoTaskView;
 use App\Task\Application\Query\GetVideoTaskQuery;
 use App\Ui\Http\Request\CreateTaskRequest;
+use App\Ui\Http\Response\ApiProblem;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -36,7 +37,7 @@ final readonly class TaskController
         $payload = json_decode($request->getContent(), true);
 
         if (!\is_array($payload)) {
-            return self::error('Invalid JSON payload', Response::HTTP_BAD_REQUEST);
+            return ApiProblem::response(Response::HTTP_BAD_REQUEST, 'El cuerpo de la petición no es un objeto JSON válido.');
         }
 
         $dto = CreateTaskRequest::fromArray($payload);
@@ -55,7 +56,7 @@ final readonly class TaskController
         if (!\is_string($taskId)) {
             // A 201 whose body says "task_id": null is worse than an error: the
             // client has nothing to poll and no reason to retry.
-            return self::error('The task could not be created', Response::HTTP_INTERNAL_SERVER_ERROR);
+            return ApiProblem::response(Response::HTTP_INTERNAL_SERVER_ERROR, 'No se pudo crear la tarea.');
         }
 
         return new JsonResponse(['task_id' => $taskId, 'status' => 'pending'], Response::HTTP_CREATED);
@@ -103,15 +104,7 @@ final readonly class TaskController
 
     private static function notFound(): JsonResponse
     {
-        return self::error('Task not found', Response::HTTP_NOT_FOUND);
-    }
-
-    /**
-     * @param array<string, mixed> $context
-     */
-    private static function error(string $message, int $status, array $context = []): JsonResponse
-    {
-        return new JsonResponse(['error' => $message] + ([] === $context ? [] : ['context' => $context]), $status);
+        return ApiProblem::response(Response::HTTP_NOT_FOUND, 'No existe ninguna tarea con ese identificador.');
     }
 
     private static function validationFailed(ConstraintViolationListInterface $violations): JsonResponse
@@ -120,9 +113,13 @@ final readonly class TaskController
 
         foreach ($violations as $violation) {
             $field = (string) $violation->getPropertyPath();
-            $errors['' === $field ? 'payload' : $field][] = (string) $violation->getMessage();
+            $errors['' === $field ? 'images' : $field][] = (string) $violation->getMessage();
         }
 
-        return self::error('Validation failed', Response::HTTP_BAD_REQUEST, ['violations' => $errors]);
+        return ApiProblem::response(
+            Response::HTTP_BAD_REQUEST,
+            'La petición no supera la validación.',
+            ['violations' => $errors],
+        );
     }
 }

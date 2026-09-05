@@ -56,7 +56,7 @@ abstract class ApiTestCase extends WebTestCase
         );
     }
 
-    /** @return array<string, mixed> */
+    /** @return array<mixed> */
     protected function responseBody(): array
     {
         $content = $this->client->getResponse()->getContent();
@@ -67,7 +67,6 @@ abstract class ApiTestCase extends WebTestCase
 
         self::assertIsArray($decoded);
 
-        /** @var array<string, mixed> $decoded */
         return $decoded;
     }
 
