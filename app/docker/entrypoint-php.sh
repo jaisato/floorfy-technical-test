@@ -1,13 +1,6 @@
 #!/usr/bin/env sh
+# php-fpm for the API. Runs as www-data (see Dockerfile); the volumes it writes
+# to are created with that ownership, so no permission fix-up is needed here.
 set -eu
 
-mkdir -p /var/www/html/public/videos /var/www/html/var/work
-
-APP_UID="${APP_UID:-1000}"
-APP_GID="${APP_GID:-1000}"
-
-chown -R "$APP_UID:$APP_GID" /var/www/html/public/videos /var/www/html/var/work 2>/dev/null || true
-chmod -R 775 /var/www/html/public/videos /var/www/html/var/work 2>/dev/null || true
-
-# php-fpm en foreground (importante para contenedor)
 exec php-fpm -F

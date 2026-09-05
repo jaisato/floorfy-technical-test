@@ -1,16 +1,16 @@
 #!/usr/bin/env sh
+# Messenger worker consuming the "async" transport (RabbitMQ).
+#
+# The worker exits on its own after --time-limit seconds or when it has used
+# --memory-limit of memory, and docker-compose restarts it: that is the standard
+# way to keep a long-running PHP process fresh. It also exits non-zero when it
+# cannot start (broker down, bad DSN), so the failure is visible in
+# `docker compose ps` and the restart policy retries it, instead of being hidden
+# behind a sleeping container.
 set -eu
 
-mkdir -p /var/www/html/public/videos /var/www/html/var/work
-
-APP_UID="${APP_UID:-1000}"
-APP_GID="${APP_GID:-1000}"
-
-chown -R "$APP_UID:$APP_GID" /var/www/html/public/videos /var/www/html/var/work 2>/dev/null || true
-chmod -R 775 /var/www/html/public/videos /var/www/html/var/work 2>/dev/null || true
-
-echo "[worker] Starting consume..."
-php bin/console messenger:consume async -vv || {
-  echo "[worker] Consume failed. Keeping container alive for debugging..."
-  tail -f /dev/null
-}
+exec php bin/console messenger:consume async \
+    --time-limit="${WORKER_TIME_LIMIT:-3600}" \
+    --memory-limit="${WORKER_MEMORY_LIMIT:-256M}" \
+    --no-interaction \
+    -vv
