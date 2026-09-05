@@ -91,6 +91,28 @@ switch ($path) {
         $redirect('/image.png');
         break;
 
+    case '/redirect/protocol-relative':
+        // "//host/path" names a different host, not a path on this one.
+        $redirect('//'.$host.'/image.png');
+        break;
+
+    case '/redirect/with-fragment':
+        // The fragment is never sent in a request, and must not be mistaken for
+        // part of the path.
+        $redirect('image.png#somewhere');
+        break;
+
+    case '/redirect/query-only':
+        // "?x=2" keeps the current path and replaces the query.
+        if (($_GET['x'] ?? null) === '2') {
+            header('Content-Type: image/png');
+            echo $png;
+            break;
+        }
+
+        $redirect('?x=2');
+        break;
+
     case '/nested/redirect/parent':
         $redirect('../../image.png');
         break;

@@ -156,6 +156,18 @@ final class PublicUrlGuardTest extends TestCase
         self::assertInstanceOf(PublicTargetPolicy::class, $policy->getDefaultValue());
     }
 
+    /**
+     * A name nothing answers for cannot be checked, so it cannot be fetched.
+     * .invalid is reserved by RFC 2606 precisely so that it never resolves.
+     */
+    public function testAHostThatCannotBeResolvedIsRefused(): void
+    {
+        $this->expectException(BlockedUrl::class);
+        $this->expectExceptionMessageMatches('/No se pudo resolver el host/');
+
+        new PublicUrlGuard()->assertFetchable('https://nothing-answers-for-this.invalid/photo.jpg');
+    }
+
     public function testEveryReturnedAddressIsPublic(): void
     {
         $ips = new PublicUrlGuard()->assertFetchable('https://1.1.1.1/photo.jpg');
