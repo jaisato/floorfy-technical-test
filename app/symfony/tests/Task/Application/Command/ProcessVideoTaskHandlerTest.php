@@ -1,0 +1,397 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Tests\Task\Application\Command;
+
+use App\Task\Application\Command\ProcessVideoTaskCommand;
+use App\Task\Application\Command\ProcessVideoTaskHandler;
+use App\Task\Domain\Entity\PartialVideo;
+use App\Task\Domain\Entity\VideoTask;
+use App\Task\Domain\Enum\PartialVideoStatus;
+use App\Task\Domain\Enum\Transition;
+use App\Task\Domain\Enum\VideoTaskStatus;
+use App\Task\Domain\Exception\TaskProcessingFailed;
+use App\Task\Infrastructure\Media\BlockedUrl;
+use App\Tests\Support\FakeImageAnimator;
+use App\Tests\Support\FakeImageFetcher;
+use App\Tests\Support\FakeVideoComposer;
+use App\Tests\Support\FixedClock;
+use App\Tests\Support\InMemoryPartialVideoRepository;
+use App\Tests\Support\InMemoryVideoTaskRepository;
+use App\Tests\Support\TempDirectory;
+use PHPUnit\Framework\TestCase;
+use Psr\Log\NullLogger;
+use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
+
+final class ProcessVideoTaskHandlerTest extends TestCase
+{
+    private const int LEASE_SECONDS = 3600;
+
+    private InMemoryVideoTaskRepository $tasks;
+    private InMemoryPartialVideoRepository $partials;
+    private FakeImageFetcher $images;
+    private FakeImageAnimator $animator;
+    private FakeVideoComposer $composer;
+    private FixedClock $clock;
+    private TempDirectory $dir;
+
+    protected function setUp(): void
+    {
+        $this->dir = new TempDirectory('floorfy-process');
+        mkdir($this->dir->file('videos'), 0o777, true);
+        mkdir($this->dir->file('work'), 0o777, true);
+
+        $this->tasks = new InMemoryVideoTaskRepository();
+        $this->partials = new InMemoryPartialVideoRepository();
+        $this->images = new FakeImageFetcher($this->dir->file('work'));
+        $this->animator = new FakeImageAnimator();
+        $this->composer = new FakeVideoComposer();
+        $this->clock = new FixedClock();
+    }
+
+    protected function tearDown(): void
+    {
+        $this->dir->remove();
+    }
+
+    public function testItRendersEveryPartAndPublishesTheFinalVideo(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png', 'https://example.com/b.png']);
+
+        $this->handle($task);
+
+        self::assertSame(VideoTaskStatus::COMPLETED, $task->status());
+        self::assertSame(
+            'http://localhost:8080/videos/final_'.$task->id()->value.'.mp4',
+            $task->finalVideoUrl(),
+        );
+        self::assertFileExists($this->dir->file('videos/final_'.$task->id()->value.'.mp4'));
+
+        foreach ($this->partials->listByTaskId($task->id()) as $partial) {
+            self::assertTrue($partial->isCompleted());
+            self::assertSame('/videos/partial_'.$partial->id()->value.'.mp4', $partial->videoPath());
+            self::assertFileExists($this->dir->file('videos/partial_'.$partial->id()->value.'.mp4'));
+        }
+    }
+
+    /** Parts are concatenated in the order the client asked for. */
+    public function testThePartsReachTheComposerInPlaybackOrder(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png', 'https://example.com/b.png', 'https://example.com/c.png']);
+
+        $this->handle($task);
+
+        $expected = array_map(
+            fn (PartialVideo $p): string => $this->dir->file('videos/partial_'.$p->id()->value.'.mp4'),
+            $this->partials->listByTaskId($task->id()),
+        );
+
+        self::assertSame([$expected], $this->composer->calls);
+    }
+
+    /**
+     * Videos are staged next to their destination and moved into place with a
+     * rename, so a client polling the task is never handed a half-written file.
+     */
+    public function testNothingIsLeftBehindInTheStagingDirectory(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+
+        $this->handle($task);
+
+        self::assertSame([], glob($this->dir->file('videos/.staging').'/*') ?: []);
+        foreach ($this->animator->calls as $call) {
+            self::assertStringContainsString('/.staging/', $call['output']);
+        }
+    }
+
+    /** The downloaded image is scratch space, not something to keep. */
+    public function testTheDownloadedImageIsRemovedOnceTheClipExists(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+
+        $this->handle($task);
+
+        self::assertSame([], glob($this->dir->file('work').'/*') ?: []);
+    }
+
+    public function testAMessageForAnUnknownTaskIsAcknowledgedAndDoesNothing(): void
+    {
+        $this->handler()(new ProcessVideoTaskCommand('0195c6a0-1c37-7000-8000-0000000000ff'));
+
+        self::assertSame([], $this->composer->calls);
+    }
+
+    /** Retrying cannot make a malformed id valid, so the message is refused outright. */
+    public function testAnIdThatIsNotAUuidIsUnrecoverable(): void
+    {
+        $this->expectException(UnrecoverableMessageHandlingException::class);
+
+        $this->handler()(new ProcessVideoTaskCommand('not-a-uuid'));
+    }
+
+    public function testATaskWithNoImagesIsUnrecoverable(): void
+    {
+        $task = $this->storedTask([]);
+
+        $this->expectException(UnrecoverableMessageHandlingException::class);
+
+        $this->handle($task);
+    }
+
+    /**
+     * The claim is a conditional UPDATE, so a redelivery that arrives while
+     * another worker still holds the task is told to drop it rather than
+     * rendering everything a second time on top of the first.
+     */
+    public function testATaskAlreadyBeingProcessedIsLeftAlone(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+        $task->markProcessing($this->clock->now());
+
+        $this->handle($task);
+
+        self::assertSame([], $this->images->fetched);
+        self::assertSame(VideoTaskStatus::PROCESSING, $task->status());
+    }
+
+    /** A worker that died mid-task must not strand it in "processing" for ever. */
+    public function testAClaimOlderThanTheLeaseCanBeTakenOver(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+        $task->markProcessing($this->clock->now());
+
+        $this->clock->advance(self::LEASE_SECONDS + 1);
+        $this->handle($task);
+
+        self::assertSame(VideoTaskStatus::COMPLETED, $task->status());
+    }
+
+    public function testACompletedTaskIsNotProcessedAgain(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+        $this->handle($task);
+
+        $callsAfterFirstRun = \count($this->composer->calls);
+        $this->handle($task);
+
+        self::assertCount($callsAfterFirstRun, $this->composer->calls);
+        self::assertSame(VideoTaskStatus::COMPLETED, $task->status());
+    }
+
+    /**
+     * The bug that made the twenty configured retries pointless: the handler
+     * settled the task on the first error, and every later delivery returned
+     * early. It must hand the claim back instead, and let Messenger decide.
+     */
+    public function testAFailedAttemptReleasesTheClaimAndRethrows(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+        $this->images->failFor('https://example.com/a.png', new \RuntimeException('connection reset'));
+
+        try {
+            $this->handle($task);
+            self::fail('a failed attempt has to propagate so the transport can retry it');
+        } catch (TaskProcessingFailed $e) {
+            self::assertStringContainsString('1 de 1', $e->getMessage());
+        }
+
+        self::assertSame(VideoTaskStatus::PENDING, $task->status(), 'the task must be claimable again');
+        self::assertNull($task->errorMessage(), 'only the terminal failure writes an error');
+    }
+
+    /**
+     * One unreachable image must not cost the work already done for the others:
+     * a retry then only has the failures left to do.
+     */
+    public function testTheOtherPartsAreStillRenderedWhenOneFails(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png', 'https://example.com/broken.png', 'https://example.com/c.png']);
+        $this->images->failFor('https://example.com/broken.png', new \RuntimeException('404'));
+
+        $this->expectException(TaskProcessingFailed::class);
+
+        try {
+            $this->handle($task);
+        } finally {
+            $statuses = array_map(
+                static fn (PartialVideo $p): string => $p->status()->value,
+                $this->partials->listByTaskId($task->id()),
+            );
+
+            self::assertSame(['completed', 'failed', 'completed'], $statuses);
+        }
+    }
+
+    /** A retry reuses what the previous attempt produced and redoes only the rest. */
+    public function testARetryOnlyRedoesTheFailedParts(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png', 'https://example.com/broken.png']);
+        $this->images->failFor('https://example.com/broken.png', new \RuntimeException('404'));
+
+        try {
+            $this->handle($task);
+        } catch (TaskProcessingFailed) {
+            // first attempt, expected
+        }
+
+        $this->images = new FakeImageFetcher($this->dir->file('work'));
+        $this->handle($task);
+
+        self::assertSame(['https://example.com/broken.png'], $this->images->fetched);
+        self::assertSame(VideoTaskStatus::COMPLETED, $task->status());
+    }
+
+    /**
+     * A part whose file has gone missing - a volume recreated, a cleanup that
+     * went too far - is rendered again rather than skipped, which would hand
+     * the composer a path with nothing behind it.
+     */
+    public function testACompletedPartWhoseFileIsGoneIsRenderedAgain(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png', 'https://example.com/broken.png']);
+        $this->images->failFor('https://example.com/broken.png', new \RuntimeException('404'));
+
+        try {
+            $this->handle($task);
+        } catch (TaskProcessingFailed) {
+            // first attempt: one part succeeded, the other did not
+        }
+
+        $done = $this->partials->listByTaskId($task->id())[0];
+        self::assertSame(PartialVideoStatus::COMPLETED, $done->status());
+        unlink($this->dir->file('videos/partial_'.$done->id()->value.'.mp4'));
+
+        $this->images = new FakeImageFetcher($this->dir->file('work'));
+        $this->handle($task);
+
+        self::assertSame(
+            ['https://example.com/a.png', 'https://example.com/broken.png'],
+            $this->images->fetched,
+        );
+        self::assertSame(VideoTaskStatus::COMPLETED, $task->status());
+    }
+
+    /**
+     * ffmpeg's stderr is hundreds of lines of banner and stream detail; the
+     * column that holds this is served to API clients.
+     */
+    public function testAnUnexpectedErrorIsNotEchoedBackToTheClient(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+        $this->images->failFor(
+            'https://example.com/a.png',
+            new \RuntimeException('SQLSTATE[HY000]: connection to 10.0.0.5 refused'),
+        );
+
+        try {
+            $this->handle($task);
+        } catch (TaskProcessingFailed) {
+            // expected
+        }
+
+        $partial = $this->partials->listByTaskId($task->id())[0];
+
+        self::assertSame('No se pudo generar el vídeo a partir de la imagen.', $partial->errorMessage());
+    }
+
+    /** A rejection the caller can act on is worth passing through, though. */
+    public function testARefusedUrlIsReportedAsSuch(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+        $this->images->failFor('https://example.com/a.png', BlockedUrl::privateAddress('example.com', '10.0.0.1'));
+
+        try {
+            $this->handle($task);
+        } catch (TaskProcessingFailed) {
+            // expected
+        }
+
+        self::assertSame(
+            'El host "example.com" resuelve a una dirección no pública (10.0.0.1).',
+            $this->partials->listByTaskId($task->id())[0]->errorMessage(),
+        );
+    }
+
+    public function testAFailedCompositionReleasesTheClaimAndLeavesTheTaskUnfinished(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+        $this->composer->failWith(new \RuntimeException('concat failed'));
+
+        try {
+            $this->handle($task);
+            self::fail('a failed composition has to propagate');
+        } catch (TaskProcessingFailed $e) {
+            self::assertStringContainsString('componer el vídeo final', $e->getMessage());
+        }
+
+        self::assertSame(VideoTaskStatus::PENDING, $task->status());
+        self::assertNull($task->finalVideoUrl());
+    }
+
+    /**
+     * A misconfigured volume is a deployment problem, not a bad request: it is
+     * reported, the claim goes back, and the retries get their chance.
+     */
+    public function testAnUnusableOutputDirectoryIsReportedAndTheClaimReleased(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+
+        // A regular file where the videos directory should be: mkdir cannot
+        // create it and nothing can be written into it.
+        $blocked = $this->dir->file('blocked');
+        file_put_contents($blocked, 'not a directory');
+
+        try {
+            $this->handlerWritingTo($blocked)(new ProcessVideoTaskCommand($task->id()->value));
+            self::fail('an unusable videos directory has to propagate');
+        } catch (TaskProcessingFailed $e) {
+            self::assertStringContainsString('no es escribible', $e->getMessage());
+        }
+
+        self::assertSame(VideoTaskStatus::PENDING, $task->status());
+    }
+
+    /** @param list<string> $imageUrls */
+    private function storedTask(array $imageUrls): VideoTask
+    {
+        $task = VideoTask::create(['images' => $imageUrls], $this->clock->now());
+        $this->tasks->save($task);
+
+        $partials = [];
+        foreach ($imageUrls as $position => $url) {
+            $partials[] = PartialVideo::create($task->id(), $url, Transition::PAN, $position, $this->clock->now());
+        }
+
+        $this->partials->saveAll($partials);
+
+        return $task;
+    }
+
+    private function handle(VideoTask $task): void
+    {
+        $this->handler()(new ProcessVideoTaskCommand($task->id()->value));
+    }
+
+    private function handler(): ProcessVideoTaskHandler
+    {
+        return $this->handlerWritingTo($this->dir->file('videos'));
+    }
+
+    private function handlerWritingTo(string $videosDir): ProcessVideoTaskHandler
+    {
+        return new ProcessVideoTaskHandler(
+            $this->tasks,
+            $this->partials,
+            $this->clock,
+            $this->images,
+            $this->animator,
+            $this->composer,
+            $videosDir,
+            'http://localhost:8080',
+            self::LEASE_SECONDS,
+            new NullLogger(),
+        );
+    }
+}

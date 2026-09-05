@@ -1,9 +1,11 @@
 <?php
+
 declare(strict_types=1);
 
 namespace App\Tests\Task\Infrastructure\Media;
 
 use App\Task\Infrastructure\Media\BlockedUrl;
+use App\Task\Infrastructure\Media\PublicTargetPolicy;
 use App\Task\Infrastructure\Media\PublicUrlGuard;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -78,7 +80,7 @@ final class PublicUrlGuardTest extends TestCase
     {
         $this->expectException(BlockedUrl::class);
 
-        (new PublicUrlGuard())->assertFetchable($url);
+        new PublicUrlGuard()->assertFetchable($url);
     }
 
     /** @return iterable<string, array{string}> */
@@ -96,7 +98,7 @@ final class PublicUrlGuardTest extends TestCase
     #[DataProvider('allowedUrls')]
     public function testPublicTargetsAreAllowed(string $url): void
     {
-        (new PublicUrlGuard())->assertFetchable($url);
+        new PublicUrlGuard()->assertFetchable($url);
 
         $this->addToAssertionCount(1);
     }
@@ -108,20 +110,61 @@ final class PublicUrlGuardTest extends TestCase
      */
     public function testReturnsTheValidatedAddressesToPinTheConnectionTo(): void
     {
-        $ips = (new PublicUrlGuard())->assertFetchable('http://8.8.8.8/photo.jpg');
+        $ips = new PublicUrlGuard()->assertFetchable('http://8.8.8.8/photo.jpg');
 
         self::assertSame(['8.8.8.8'], $ips);
     }
 
+    /**
+     * An HTTP service on an odd port is an admin panel, a database's REST front
+     * end, a debug listener - not the web URLs this API is meant to fetch.
+     */
+    public function testOnlyTheWebPortsAreAllowed(): void
+    {
+        $this->expectException(BlockedUrl::class);
+        $this->expectExceptionMessageMatches('/Puerto no permitido: 9200/');
+
+        new PublicUrlGuard()->assertFetchable('http://8.8.8.8:9200/_cluster/health');
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function allowedPorts(): iterable
+    {
+        yield 'implicit 80' => ['http://8.8.8.8/photo.jpg'];
+        yield 'explicit 80' => ['http://8.8.8.8:80/photo.jpg'];
+        yield 'implicit 443' => ['https://8.8.8.8/photo.jpg'];
+        yield 'explicit 443' => ['https://8.8.8.8:443/photo.jpg'];
+    }
+
+    #[DataProvider('allowedPorts')]
+    public function testTheWebPortsAreAllowedWhicheverWayTheyAreWritten(string $url): void
+    {
+        self::assertNotEmpty(new PublicUrlGuard()->assertFetchable($url));
+    }
+
+    /**
+     * The policy is a constructor argument so the download tests can reach a
+     * server on 127.0.0.1, and for no other reason: nothing in the application
+     * passes anything but the default, and there is no environment variable
+     * that changes it.
+     */
+    public function testTheDefaultPolicyIsTheStrictOne(): void
+    {
+        $policy = new \ReflectionParameter([PublicUrlGuard::class, '__construct'], 'policy');
+
+        self::assertTrue($policy->isDefaultValueAvailable());
+        self::assertInstanceOf(PublicTargetPolicy::class, $policy->getDefaultValue());
+    }
+
     public function testEveryReturnedAddressIsPublic(): void
     {
-        $ips = (new PublicUrlGuard())->assertFetchable('https://1.1.1.1/photo.jpg');
+        $ips = new PublicUrlGuard()->assertFetchable('https://1.1.1.1/photo.jpg');
 
         self::assertNotEmpty($ips);
 
         foreach ($ips as $ip) {
             self::assertNotFalse(
-                filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE),
+                filter_var($ip, \FILTER_VALIDATE_IP, \FILTER_FLAG_NO_PRIV_RANGE | \FILTER_FLAG_NO_RES_RANGE),
                 'the guard must never hand back a private or reserved address',
             );
         }
