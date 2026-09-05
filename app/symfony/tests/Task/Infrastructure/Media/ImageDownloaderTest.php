@@ -75,6 +75,9 @@ final class ImageDownloaderTest extends TestCase
         yield 'relative to the current directory' => ['/redirect/relative'];
         yield 'rooted at the host' => ['/redirect/root-relative'];
         yield 'walking up with ..' => ['/nested/redirect/parent'];
+        yield 'protocol relative' => ['/redirect/protocol-relative'];
+        yield 'carrying a fragment' => ['/redirect/with-fragment'];
+        yield 'query only' => ['/redirect/query-only?x=1'];
     }
 
     #[DataProvider('redirectsThatReachTheImage')]
