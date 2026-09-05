@@ -46,6 +46,7 @@ services:
             - '../src/Task/Infrastructure/Persistence/Doctrine/Entity/'
             - '../src/Task/Infrastructure/Video/FfmpegFailed.php'
             - '../src/Ui/Http/Request/'
+            - '../src/Ui/Http/Response/'
 
     # Ports -> adapters.
     App\Shared\Application\Clock\Clock: '@App\Shared\Infrastructure\Clock\SystemClock'
