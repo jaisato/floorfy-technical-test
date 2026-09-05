@@ -1,0 +1,175 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# Read-only by default; nothing here publishes anything.
+permissions:
+  contents: read
+
+# A new push to the same branch supersedes the run in flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PHP_VERSION: '8.4'
+  # Minimum line coverage, enforced by .github/scripts/coverage-threshold.php.
+  COVERAGE_MINIMUM: '80'
+
+defaults:
+  run:
+    working-directory: app/symfony
+
+jobs:
+  lint:
+    name: Static analysis and coding standard
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: amqp, ctype, iconv, intl, pdo_sqlite
+          coverage: none
+          tools: composer:v2
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: composer-${{ runner.os }}-php${{ env.PHP_VERSION }}-${{ hashFiles('app/symfony/composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-php${{ env.PHP_VERSION }}-
+
+      - name: Validate composer.json against composer.lock
+        run: composer validate --strict
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Warm the test container
+        # phpstan-symfony and Rector read the compiled container to resolve
+        # service types, so it has to exist before either runs.
+        run: php bin/console cache:warmup --env=test
+
+      - name: Coding standard
+        run: php vendor/bin/php-cs-fixer check --diff
+
+      - name: Static analysis
+        run: php vendor/bin/phpstan analyse --no-progress
+
+      - name: Automated refactorings
+        run: php vendor/bin/rector process --dry-run --no-progress-bar
+
+      - name: Lint the service container
+        run: php bin/console lint:container --env=test
+
+      - name: Lint the YAML configuration
+        run: php bin/console lint:yaml config --env=test
+
+  test:
+    name: Tests
+    runs-on: ubuntu-24.04
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root_ci_password
+          MYSQL_DATABASE: app_test
+          MYSQL_USER: app
+          MYSQL_PASSWORD: app_ci_password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+          --health-start-period=20s
+
+      rabbitmq:
+        image: rabbitmq:3.13-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: app
+          RABBITMQ_DEFAULT_PASS: app
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd="rabbitmq-diagnostics -q ping"
+          --health-interval=10s
+          --health-timeout=10s
+          --health-retries=12
+          --health-start-period=20s
+
+    env:
+      DATABASE_URL: 'mysql://app:app_ci_password@127.0.0.1:3306/app_test?serverVersion=8.0&charset=utf8mb4'
+      MESSENGER_TRANSPORT_DSN: 'amqp://app:app_ci_password@127.0.0.1:5672/%2f/messages'
+      MESSENGER_FAILURE_TRANSPORT_DSN: 'amqp://app:app_ci_password@127.0.0.1:5672/%2f/failed'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        # The "ffmpeg" group is excluded locally because the binary is not a
+        # reasonable thing to require of a contributor; here it is installed and
+        # the filter graphs are run for real.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+        working-directory: .
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: amqp, ctype, gd, iconv, intl, pdo_mysql, pdo_sqlite
+          coverage: pcov
+          tools: composer:v2
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: composer-${{ runner.os }}-php${{ env.PHP_VERSION }}-${{ hashFiles('app/symfony/composer.lock') }}
+          restore-keys: composer-${{ runner.os }}-php${{ env.PHP_VERSION }}-
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: Apply the migrations, roll them back, and apply them again
+        # The suite builds its schema from the mapping so it can run anywhere;
+        # this is where the migrations themselves are proven, against the MySQL
+        # they are written for, in both directions.
+        env:
+          DATABASE_URL: 'mysql://app:app_ci_password@127.0.0.1:3306/app_migrations?serverVersion=8.0&charset=utf8mb4'
+        run: |
+          php bin/console doctrine:database:create --if-not-exists --env=test
+          php bin/console doctrine:migrations:migrate --no-interaction --env=test
+          php bin/console doctrine:migrations:migrate first --no-interaction --env=test
+          php bin/console doctrine:migrations:migrate --no-interaction --env=test
+
+      - name: Declare the AMQP transports
+        # Proves the broker wiring: the DSNs are valid, ext-amqp is present, and
+        # the exchanges and queues the worker consumes can be created.
+        run: php bin/console messenger:setup-transports --env=prod
+        env:
+          APP_SECRET: ci-only-not-a-secret
+          APP_URL: http://localhost:8080
+          DEFAULT_URI: http://localhost:8080
+
+      - name: Run the whole suite, including the mysql and ffmpeg groups
+        # phpunit.dist.xml excludes those two groups so the suite runs on a
+        # clean clone with no services; an empty --exclude-group replaces that
+        # exclusion, and here both a database and ffmpeg are available.
+        run: >-
+          php bin/phpunit
+          --do-not-cache-result
+          --exclude-group ''
+          --coverage-clover=var/coverage/clover.xml
+          --coverage-text
+
+      - name: Enforce the coverage floor
+        run: php ../../.github/scripts/coverage-threshold.php var/coverage/clover.xml "${COVERAGE_MINIMUM}"
