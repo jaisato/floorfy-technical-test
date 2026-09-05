@@ -6,6 +6,7 @@ namespace App\Tests\Ui\Http\Controller;
 
 use App\Task\Application\Command\ProcessVideoTaskCommand;
 use App\Tests\Support\ApiTestCase;
+use App\Ui\Http\Response\ApiProblem;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -85,7 +86,8 @@ final class TaskControllerTest extends ApiTestCase
         $this->json('POST', '/api/tasks', $payload);
 
         $this->assertStatus(Response::HTTP_BAD_REQUEST);
-        self::assertSame('Validation failed', $this->responseBody()['error']);
+        self::assertProblem(Response::HTTP_BAD_REQUEST);
+        self::assertNotEmpty($this->responseBody()['violations']);
         self::assertSame([], $this->transport('async')->getSent());
     }
 
@@ -94,7 +96,8 @@ final class TaskControllerTest extends ApiTestCase
         $this->json('POST', '/api/tasks', '{"images": ');
 
         $this->assertStatus(Response::HTTP_BAD_REQUEST);
-        self::assertSame('Invalid JSON payload', $this->responseBody()['error']);
+        self::assertProblem(Response::HTTP_BAD_REQUEST);
+        self::assertArrayNotHasKey('violations', $this->responseBody());
     }
 
     /**
@@ -202,16 +205,21 @@ final class TaskControllerTest extends ApiTestCase
         $this->client->request('GET', \sprintf($template, '0195c6a0-1c37-7000-8000-0000000000ff'));
 
         $this->assertStatus(Response::HTTP_NOT_FOUND);
-        self::assertSame('Task not found', $this->responseBody()['error']);
+        self::assertProblem(Response::HTTP_NOT_FOUND);
     }
 
-    /** A typo in the path is a task that does not exist, not a 500. */
+    /**
+     * A typo in the path is a task that does not exist, not a 500 - and it is
+     * answered by the router rather than by a controller, so it is also where
+     * the single error contract earns its keep.
+     */
     #[DataProvider('readEndpoints')]
     public function testAnIdThatIsNotAUuidIsANotFound(string $template): void
     {
         $this->client->request('GET', \sprintf($template, 'not-a-uuid'));
 
         $this->assertStatus(Response::HTTP_NOT_FOUND);
+        self::assertProblem(Response::HTTP_NOT_FOUND);
     }
 
     /** @return iterable<string, array{string, string}> */
@@ -229,6 +237,30 @@ final class TaskControllerTest extends ApiTestCase
         $this->client->request($method, $uri);
 
         $this->assertStatus(Response::HTTP_METHOD_NOT_ALLOWED);
+        self::assertProblem(Response::HTTP_METHOD_NOT_ALLOWED);
+
+        // The Allow header the router produced survives the conversion.
+        self::assertNotSame('', (string) $this->client->getResponse()->headers->get('Allow'));
+    }
+
+    /**
+     * Every error, wherever it came from, is the same document: RFC 9457
+     * problem+json, with no exception message and no echo of the request.
+     */
+    private function assertProblem(int $status): void
+    {
+        self::assertSame(
+            ApiProblem::CONTENT_TYPE,
+            $this->client->getResponse()->headers->get('Content-Type'),
+        );
+
+        $body = $this->responseBody();
+
+        self::assertSame('about:blank', $body['type']);
+        self::assertSame($status, $body['status']);
+        self::assertIsString($body['title']);
+        self::assertIsString($body['detail']);
+        self::assertNotSame('', $body['detail']);
     }
 
     private function createTask(): string
