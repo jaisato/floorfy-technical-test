@@ -8,14 +8,30 @@ framework:
             messenger.bus.query:
                 default_middleware: true
 
+        # Where a message goes once its retries are exhausted. Without this the
+        # message is discarded, and a task nobody can explain is left behind.
+        # Inspect with `messenger:failed:show`, requeue with
+        # `messenger:failed:retry`.
+        failure_transport: failed
+
         transports:
             async:
                 dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
                 retry_strategy:
+                    # Video work fails for reasons that pass: an image host that
+                    # is briefly down, a worker that ran out of memory. Backing
+                    # off from 10s to a 10-minute ceiling spreads twenty attempts
+                    # over roughly three hours.
                     max_retries: 20
                     delay: 10000
                     multiplier: 2
                     max_delay: 600000
+
+            failed:
+                dsn: '%env(MESSENGER_FAILURE_TRANSPORT_DSN)%'
+                retry_strategy:
+                    # A dead-letter queue is a place to look, not to retry from.
+                    max_retries: 0
 
         routing:
             App\Task\Application\Command\ProcessVideoTaskCommand: async

@@ -1,0 +1,8 @@
+framework:
+    messenger:
+        transports:
+            # No broker in the test suite: messages are collected in memory so a
+            # test can assert what was dispatched, and no AMQP extension is
+            # needed to boot the kernel.
+            async: 'in-memory://'
+            failed: 'in-memory://'

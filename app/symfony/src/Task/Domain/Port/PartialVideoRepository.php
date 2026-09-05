@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace App\Task\Domain\Port;
@@ -10,6 +11,17 @@ interface PartialVideoRepository
 {
     public function save(PartialVideo $partial): void;
 
-    /** @return list<PartialVideo> */
+    /**
+     * Writes a whole batch in one round trip.
+     *
+     * @param list<PartialVideo> $partials
+     */
+    public function saveAll(array $partials): void;
+
+    /**
+     * The parts of a task, in the order they must be concatenated.
+     *
+     * @return list<PartialVideo>
+     */
     public function listByTaskId(UuidValue $taskId): array;
 }

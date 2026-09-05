@@ -1,9 +1,23 @@
-# app/symfony/config/services.yaml
+# Service container. Autowiring is on, so only what the container cannot infer
+# is written here: scalar arguments, and which adapter backs each port.
 parameters:
-    app.storage_dir: '%kernel.project_dir%/public'
-    app.public_base_url: '%env(resolve:BASE_PUBLIC_URL)%'
-    app.gcp.scopes: 'https://www.googleapis.com/auth/cloud-platform'
-    app.ffmpeg_work_dir: '%kernel.project_dir%/var/video_work'
+    # Scratch space: downloaded images and ffmpeg's concat lists. Never served.
+    # Mounted as a Docker volume at the same path in the container.
+    app.work_dir: '%kernel.project_dir%/var/work'
+
+    # The directory nginx publishes as /videos, and the base URL that maps onto
+    # it. One variable: the previous pair (APP_URL, BASE_PUBLIC_URL) had the
+    # worker building URLs from whichever of the two was set.
+    app.videos_dir: '%kernel.project_dir%/public/videos'
+    app.public_base_url: '%env(resolve:APP_URL)%'
+
+    # How long a claimed task may stay "processing" before another worker is
+    # allowed to take it over, for the case where the first one was killed.
+    app.task_lease_seconds: '%env(int:TASK_LEASE_SECONDS)%'
+
+    app.ffmpeg_animate_timeout: '%env(int:FFMPEG_ANIMATE_TIMEOUT)%'
+    app.ffmpeg_compose_timeout: '%env(int:FFMPEG_COMPOSE_TIMEOUT)%'
+    app.ffmpeg_threads: '%env(int:FFMPEG_THREADS)%'
 
 services:
     _defaults:
@@ -12,26 +26,45 @@ services:
         bind:
             $commandBus: '@messenger.bus.command'
             $queryBus: '@messenger.bus.query'
-
-            string $storageDir: '%kernel.project_dir%/public/storage'
-            string $publicBaseUrl: '%env(resolve:BASE_PUBLIC_URL)%/storage'
-            string $appUrl: '%env(resolve:APP_URL)%'
-
-    Google\Cloud\Storage\StorageClient:
-        arguments:
-            - { projectId: '%env(GCP_PROJECT_ID)%', keyFilePath: '%env(resolve:GOOGLE_APPLICATION_CREDENTIALS)%' }
+            string $workDir: '%app.work_dir%'
 
     App\:
         resource: '../src/'
         exclude:
-            - '../src/DependencyInjection/'
+            # Data, not services. Registering entities, value objects, enums,
+            # messages and DTOs makes the container try to autowire their
+            # constructors, and puts hundreds of ids in it that nothing asks for.
             - '../src/Kernel.php'
+            - '../src/Shared/Domain/Exception/'
+            - '../src/Shared/Domain/ValueObject/'
+            - '../src/Shared/Infrastructure/Process/ProcessResult.php'
+            - '../src/Task/Application/Command/CreateVideoTaskCommand.php'
+            - '../src/Task/Application/Command/ProcessVideoTaskCommand.php'
+            - '../src/Task/Application/DTO/'
+            - '../src/Task/Application/Query/GetVideoTaskQuery.php'
+            - '../src/Task/Domain/'
+            - '../src/Task/Infrastructure/Persistence/Doctrine/Entity/'
+            - '../src/Task/Infrastructure/Video/FfmpegFailed.php'
+            - '../src/Ui/Http/Request/'
 
-    App\Composition\Domain\Port\VideoComposer: '@App\Infrastructure\Composition\Ffmpeg\FfmpegVideoComposer'
-
-    App\Infrastructure\Composition\Ffmpeg\FfmpegVideoComposer:
-        arguments:
-            $workDir: '%app.ffmpeg_work_dir%'
-
-    App\Task\Domain\Port\VideoTaskRepository: '@App\Task\Infrastructure\Persistence\Doctrine\Repository\DoctrineVideoTaskRepository'
+    # Ports -> adapters.
+    App\Shared\Application\Clock\Clock: '@App\Shared\Infrastructure\Clock\SystemClock'
+    App\Shared\Application\Transaction\Transaction: '@App\Shared\Infrastructure\Persistence\Doctrine\DoctrineTransaction'
+    App\Shared\Infrastructure\Process\ProcessRunner: '@App\Shared\Infrastructure\Process\SymfonyProcessRunner'
+    App\Task\Domain\Port\ImageAnimator: '@App\Task\Infrastructure\Video\FfmpegImageAnimator'
+    App\Task\Domain\Port\ImageFetcher: '@App\Task\Infrastructure\Media\ImageDownloader'
     App\Task\Domain\Port\PartialVideoRepository: '@App\Task\Infrastructure\Persistence\Doctrine\Repository\DoctrinePartialVideoRepository'
+    App\Task\Domain\Port\VideoComposer: '@App\Task\Infrastructure\Video\FfmpegVideoComposer'
+    App\Task\Domain\Port\VideoTaskRepository: '@App\Task\Infrastructure\Persistence\Doctrine\Repository\DoctrineVideoTaskRepository'
+    App\Task\Infrastructure\Media\TargetPolicy: '@App\Task\Infrastructure\Media\PublicTargetPolicy'
+
+    # ffmpeg budgets. One invocation per part, then one for the concatenation.
+    App\Task\Infrastructure\Video\FfmpegImageAnimator:
+        arguments:
+            $timeoutSeconds: '%app.ffmpeg_animate_timeout%'
+            $threads: '%app.ffmpeg_threads%'
+
+    App\Task\Infrastructure\Video\FfmpegVideoComposer:
+        arguments:
+            $timeoutSeconds: '%app.ffmpeg_compose_timeout%'
+            $threads: '%app.ffmpeg_threads%'
