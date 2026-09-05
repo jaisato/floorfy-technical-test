@@ -1,4 +1,6 @@
 {
+    "name": "floorfy/technical-test",
+    "description": "JSON API that turns still images into animated clips and concatenates them into one video.",
     "type": "project",
     "license": "proprietary",
     "minimum-stability": "stable",
@@ -8,12 +10,8 @@
         "ext-ctype": "*",
         "ext-iconv": "*",
         "doctrine/doctrine-bundle": "^3.3.1",
-        "doctrine/doctrine-migrations-bundle": "^4.0",
+        "doctrine/doctrine-migrations-bundle": "^4.0.1",
         "doctrine/orm": "^3.6.8",
-        "google/apiclient": "^2.19.4",
-        "google/auth": ">=1.53",
-        "google/cloud-storage": "^1.51",
-        "php-ffmpeg/php-ffmpeg": "^1.4",
         "symfony/amqp-messenger": "7.4.*",
         "symfony/console": "7.4.*",
         "symfony/dotenv": "7.4.*",
@@ -27,7 +25,6 @@
         "symfony/process": "7.4.*",
         "symfony/routing": "7.4.*",
         "symfony/runtime": "7.4.*",
-        "symfony/serializer": "7.4.*",
         "symfony/uid": "7.4.*",
         "symfony/validator": "7.4.*",
         "symfony/yaml": "7.4.*"
@@ -66,15 +63,31 @@
     },
     "scripts": {
         "auto-scripts": {
-            "cache:clear": "symfony-cmd",
-            "assets:install %PUBLIC_DIR%": "symfony-cmd"
+            "cache:clear": "symfony-cmd"
         },
         "post-install-cmd": [
             "@auto-scripts"
         ],
         "post-update-cmd": [
             "@auto-scripts"
-        ]
+        ],
+        "cs": "php-cs-fixer check --diff",
+        "cs:fix": "php-cs-fixer fix",
+        "stan": "phpstan analyse",
+        "rector": "rector process --dry-run",
+        "lint": [
+            "@php bin/console lint:container",
+            "@php bin/console lint:yaml config"
+        ],
+        "test": "@php bin/phpunit"
+    },
+    "scripts-descriptions": {
+        "cs": "Reports coding-standard violations without changing any file.",
+        "cs:fix": "Applies the coding standard in place.",
+        "stan": "Runs the PHPStan static analysis (level 8).",
+        "rector": "Reports the automated refactorings Rector would apply.",
+        "lint": "Lints the service container and the YAML configuration.",
+        "test": "Runs the PHPUnit suite (the mysql and ffmpeg groups are excluded by default)."
     },
     "conflict": {
         "symfony/symfony": "*"
@@ -86,15 +99,14 @@
         }
     },
     "require-dev": {
-        "friendsofphp/php-cs-fixer": "^3.95.18",
-        "phpstan/phpstan": "^2.2.8",
+        "friendsofphp/php-cs-fixer": "^3.95.24",
+        "phpstan/phpstan": "^2.2.13",
         "phpstan/phpstan-doctrine": "^2.0.28",
+        "phpstan/phpstan-phpunit": "^2.0.18",
         "phpstan/phpstan-symfony": "^2.0.20",
-        "phpunit/phpunit": "^12.5.33",
-        "rector/rector": "^2.6.1",
+        "phpunit/phpunit": "^12.5.34",
+        "rector/rector": "^2.6.6",
         "symfony/browser-kit": "7.4.*",
-        "symfony/css-selector": "7.4.*",
-        "symfony/maker-bundle": "^1.67",
-        "vimeo/psalm": "^6.16.1"
+        "symfony/css-selector": "7.4.*"
     }
 }
