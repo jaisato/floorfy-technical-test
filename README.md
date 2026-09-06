@@ -401,6 +401,23 @@ curl -H 'X-API-Key: <secreto>'            http://localhost:8080/api/tasks
   mismo secreto) es un error de arranque, no un despliegue silenciosamente
   abierto.
 
+### Límite de creación (opcional)
+
+`RATE_LIMIT_TASK_CREATION=N` limita a N por minuto los `POST /api/tasks` de un
+mismo llamante (ventana deslizante, no fija: así nadie gasta el presupuesto de
+un minuto dos veces cruzando el borde). `0` — el valor por defecto — lo apaga
+del todo: ni siquiera se consulta el limitador.
+
+Sólo se cuenta la creación de tareas, que es lo que cuesta dinero: cada petición
+compra minutos de FFmpeg en un worker compartido. Las lecturas no se limitan.
+
+- Dentro del límite: la respuesta normal, con `X-RateLimit-Limit`,
+  `X-RateLimit-Remaining` y `X-RateLimit-Reset`, para que un cliente educado
+  pueda frenar antes de que le digan que no.
+- Pasado el límite: **429** `problem+json` con `Retry-After`. No se crea nada.
+- El contador es **por llamante**: el nombre del cliente autenticado si lo hay,
+  y la IP si la API está abierta.
+
 ### Salud (`/health`, `/health/ready`)
 
 Dos preguntas distintas, con dos respuestas distintas — mezclarlas es lo que
@@ -458,6 +475,7 @@ que está en `.gitignore`.
 | `APP_URL` | URL pública de la API; con ella se construyen las URLs de vídeo |
 | `DEFAULT_URI` | base para generar URLs fuera de una petición HTTP |
 | `API_TOKENS` | claves de API `nombre:secreto,…`; **vacío = API abierta** (por defecto) |
+| `RATE_LIMIT_TASK_CREATION` | tareas por minuto y llamante; `0` = sin límite (por defecto) |
 | `VIDEO_URL_SECRET` | clave HMAC de las URLs firmadas de `/videos/`; vacío = sin firmar |
 | `VIDEO_URL_TTL_SECONDS` | validez de una URL firmada (1 h por defecto) |
 | `VIDEOS_X_ACCEL_PREFIX` | *location* interna de nginx a la que se delega el envío del fichero; vacío = lo manda PHP |
