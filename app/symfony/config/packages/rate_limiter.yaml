@@ -1,0 +1,30 @@
+framework:
+    rate_limiter:
+        # Task creation is the expensive operation: one request buys minutes of
+        # ffmpeg on a shared worker. A sliding window rather than a fixed one,
+        # so a client cannot spend a whole minute's budget twice by straddling
+        # the boundary.
+        task_creation:
+            policy: 'sliding_window'
+            limit: '%env(int:RATE_LIMIT_TASK_CREATION)%'
+            interval: '1 minute'
+            cache_pool: app.rate_limiter.pool
+
+    cache:
+        pools:
+            # Its own pool, so the counters can be moved to Redis (adapter:
+            # cache.adapter.redis) without dragging the rest of the cache along.
+            app.rate_limiter.pool:
+                adapter: cache.app
+
+when@test:
+    services:
+        # Cache pools are reset between requests in the test kernel, which would
+        # give every request a fresh count and leave the limit untestable. The
+        # test that exercises it keeps one kernel alive across requests.
+        Symfony\Component\RateLimiter\Storage\InMemoryStorage: ~
+
+    framework:
+        rate_limiter:
+            task_creation:
+                storage_service: 'Symfony\Component\RateLimiter\Storage\InMemoryStorage'

@@ -36,6 +36,8 @@ x-app-environment: &app-environment
   # nginx serves the video files from this internal location once the
   # application has checked the signature, so PHP never carries the bytes.
   VIDEOS_X_ACCEL_PREFIX: /protected-videos
+  # Tasks one caller may create per minute; 0 turns the limit off.
+  RATE_LIMIT_TASK_CREATION: ${RATE_LIMIT_TASK_CREATION:-0}
 
 services:
   nginx:
