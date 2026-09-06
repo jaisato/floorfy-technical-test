@@ -207,15 +207,21 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         return true;
     }
 
-    public function markCallbackNotified(UuidValue $id, DateTimeValue $now): void
+    public function markCallbackNotified(UuidValue $id, string $event, DateTimeValue $now): bool
     {
-        $this->em->getConnection()->executeStatement(
-            'UPDATE video_tasks SET callback_notified_at = :now WHERE id = :id',
-            ['now' => $now->toDateTimeImmutable(), 'id' => $id->value],
-            ['now' => Types::DATETIME_IMMUTABLE, 'id' => ParameterType::STRING],
+        // Conditional on the task still standing where the notification said
+        // it did: a retry that landed while the delivery was in flight has
+        // moved it on, and this mark would answer for a run whose own
+        // notification never went out.
+        $affected = $this->em->getConnection()->executeStatement(
+            'UPDATE video_tasks SET callback_notified_at = :now WHERE id = :id AND status = :event',
+            ['now' => $now->toDateTimeImmutable(), 'id' => $id->value, 'event' => $event],
+            ['now' => Types::DATETIME_IMMUTABLE, 'id' => ParameterType::STRING, 'event' => ParameterType::STRING],
         );
 
         $this->forgetCachedCopy($id);
+
+        return 1 === $affected;
     }
 
     public function clearCallbackNotification(UuidValue $id): void

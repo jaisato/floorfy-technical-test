@@ -45,6 +45,14 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
      */
     public $beforeMarkFailed;
 
+    /**
+     * Run just before markCallbackNotified() decides, so a test can retry the
+     * task in the window a delivery in flight occupies.
+     *
+     * @var (callable(UuidValue): void)|null
+     */
+    public $beforeMarkNotified;
+
     public function save(VideoTask $task): void
     {
         ++$this->saves;
@@ -215,9 +223,21 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         );
     }
 
-    public function markCallbackNotified(UuidValue $id, DateTimeValue $now): void
+    public function markCallbackNotified(UuidValue $id, string $event, DateTimeValue $now): bool
     {
+        if (null !== $this->beforeMarkNotified) {
+            ($this->beforeMarkNotified)($id);
+        }
+
+        $task = $this->tasks[$id->value] ?? null;
+
+        if (null === $task || $task->status()->value !== $event) {
+            return false;
+        }
+
         $this->callbacksNotified[$id->value] = $now;
+
+        return true;
     }
 
     public function clearCallbackNotification(UuidValue $id): void

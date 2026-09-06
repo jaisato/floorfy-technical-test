@@ -75,6 +75,49 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         self::assertSame('pending', $this->delivery->delivered[0]->body['status']);
     }
 
+    /**
+     * The delivery takes as long as the endpoint takes, and a retry landing in
+     * that window re-renders and settles again. Marked all the same, the
+     * notification of the run that is over answered for the run that is not:
+     * the recovery sweep looks for settled tasks whose callback never went
+     * out, this row said it had, and the client was never told the retry
+     * completed.
+     */
+    public function testADeliveryOvertakenByARetryDoesNotAnswerForTheNewRun(): void
+    {
+        $task = VideoTask::create(['images' => []], $this->now, 'https://client.example/hook');
+        $task->markFailed('boom', $this->now);
+        $this->tasks->save($task);
+
+        // Retried and finished while this notification was on the wire.
+        $this->tasks->beforeMarkNotified = function () use ($task): void {
+            $task->retry($this->now);
+            $task->markProcessing($this->now);
+            $task->markCompleted('/videos/final.mp4', $this->now);
+        };
+
+        $this->handler()(new NotifyTaskCallback($task->id()->value, 'failed'));
+
+        self::assertCount(1, $this->delivery->delivered, 'the delivery itself still happened');
+        self::assertArrayNotHasKey(
+            $task->id()->value,
+            $this->tasks->callbacksNotified,
+            'and the completion the client has not heard about is still owed',
+        );
+    }
+
+    /** The ordinary case: nothing moved, so the mark stands and the sweep stops offering the task. */
+    public function testADeliveryOfTheCurrentStatusIsRecorded(): void
+    {
+        $task = $this->taskWithCallback();
+        $task->markProcessing($this->now);
+        $task->markCompleted('/videos/final.mp4', $this->now);
+
+        $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+
+        self::assertArrayHasKey($task->id()->value, $this->tasks->callbacksNotified);
+    }
+
     public function testATaskWithoutACallbackUrlIsAcknowledgedSilently(): void
     {
         $task = VideoTask::create(['images' => []], $this->now);
