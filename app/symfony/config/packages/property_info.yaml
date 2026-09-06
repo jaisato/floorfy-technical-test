@@ -1,0 +1,6 @@
+framework:
+    # Installed as a dependency of security-bundle and read by the OpenAPI
+    # generator. The default flips in Symfony 8 and not choosing is deprecated,
+    # and a deprecation is a failing test here.
+    property_info:
+        with_constructor_extractor: true
