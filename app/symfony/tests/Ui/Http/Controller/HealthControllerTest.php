@@ -48,6 +48,25 @@ final class HealthControllerTest extends WebTestCase
     }
 
     /**
+     * The checks the container actually wires, without replacing the probe:
+     * one per directory the worker writes into and one per queue it depends
+     * on. Probing only `async` left the callbacks transport - its own DSN, its
+     * own vhost, its own credentials - unchecked, so a broken one answered
+     * ready while no webhook could be published or consumed.
+     */
+    public function testReadinessAnswersForEveryQueueAndDirectory(): void
+    {
+        $this->client->request('GET', '/health/ready');
+
+        $checks = $this->body()['checks'];
+        self::assertIsArray($checks);
+
+        foreach (['database', 'transport', 'callbacks_transport', 'videos_dir', 'work_dir'] as $name) {
+            self::assertArrayHasKey($name, $checks);
+        }
+    }
+
+    /**
      * 503, not 500: the application is fine, what it depends on is not, and a
      * load balancer reads the difference.
      */

@@ -343,7 +343,7 @@ final class ProcessVideoTaskHandlerTest extends TestCase
 
         try {
             $this->handle($task);
-        } catch (TaskProcessingFailed) {
+        } catch (UnrecoverableMessageHandlingException) {
             // expected
         }
 
@@ -351,6 +351,40 @@ final class ProcessVideoTaskHandlerTest extends TestCase
             'El host "example.com" resuelve a una dirección no pública (10.0.0.1).',
             $this->partials->listByTaskId($task->id())[0]->errorMessage(),
         );
+    }
+
+    /**
+     * And it is not retried. The policy refuses a URL for what it is - its
+     * scheme, its port, the address its host resolves to - so every one of the
+     * twenty attempts, spread over roughly three hours, held a worker to reach
+     * the conclusion the first one had and the task ended `failed` with the
+     * same answer it started with.
+     */
+    public function testATaskWhoseImagesAreAllRefusedIsNotRetried(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png', 'https://example.com/b.png']);
+        $this->images->failFor('https://example.com/a.png', BlockedUrl::port(8080));
+        $this->images->failFor('https://example.com/b.png', BlockedUrl::scheme('ftp'));
+
+        $this->expectException(UnrecoverableMessageHandlingException::class);
+
+        $this->handle($task);
+    }
+
+    /**
+     * One failure that could pass later keeps the whole attempt retryable: the
+     * parts that rendered are reused, so the retry only has the failures left
+     * and the transient one is the reason to come back.
+     */
+    public function testOneTransientFailureAmongRefusalsIsStillRetried(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png', 'https://example.com/b.png']);
+        $this->images->failFor('https://example.com/a.png', BlockedUrl::port(8080));
+        $this->images->failFor('https://example.com/b.png', new \RuntimeException('el origen no respondió'));
+
+        $this->expectException(TaskProcessingFailed::class);
+
+        $this->handle($task);
     }
 
     public function testAFailedCompositionReleasesTheClaimAndLeavesTheTaskUnfinished(): void

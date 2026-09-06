@@ -134,7 +134,7 @@ final class HealthChecksTest extends TestCase
     {
         $transport = new InMemoryTransportFactory()->createTransport('in-memory://', [], new PhpSerializer());
 
-        $check = new TransportCheck($transport);
+        $check = new TransportCheck('transport', $transport);
 
         self::assertSame('transport', $check->name());
         self::assertTrue($check->check()->ok);

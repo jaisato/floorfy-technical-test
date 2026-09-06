@@ -151,6 +151,15 @@ final readonly class PruneVideos
             $bytes += $size;
         }
 
+        // The sources the run downloaded are leftovers exactly as the videos
+        // are, and this used to be attempted only once every video had gone,
+        // with every failure suppressed and the task marked pruned regardless.
+        // A work volume gone read-only - or a permission the deployment lost -
+        // therefore left those images on disk for good: listPrunable() skips a
+        // pruned task and nothing else sweeps that directory. Attempted
+        // whichever way the videos went, and what it cannot delete joins them.
+        $left = [...$left, ...self::removeDirectory($this->workDir.'/images/'.$id->value)];
+
         if ([] !== $left) {
             // Not marked as pruned, on purpose: pruned_at is what stops the
             // job coming back, and a task whose files are still there is
@@ -174,7 +183,6 @@ final readonly class PruneVideos
             return new PrunedTask(null, $files, $bytes);
         }
 
-        self::removeDirectory($this->workDir.'/images/'.$id->value);
         $this->markPruned($task, $parts);
 
         return new PrunedTask($id->value, $files, $bytes);
@@ -311,10 +319,16 @@ final readonly class PruneVideos
         $this->tasks->save($task);
     }
 
-    private static function removeDirectory(string $directory): void
+    /**
+     * Deletes a directory and everything under it, and says what is still
+     * there afterwards.
+     *
+     * @return list<string> the paths it could not remove
+     */
+    private static function removeDirectory(string $directory): array
     {
         if (!is_dir($directory)) {
-            return;
+            return [];
         }
 
         $entries = new \RecursiveIteratorIterator(
@@ -322,18 +336,27 @@ final readonly class PruneVideos
             \RecursiveIteratorIterator::CHILD_FIRST,
         );
 
+        $left = [];
+
         foreach ($entries as $entry) {
             if (!$entry instanceof \SplFileInfo) {
                 continue;
             }
 
-            if ($entry->isDir()) {
-                @rmdir($entry->getPathname());
-            } else {
-                @unlink($entry->getPathname());
+            $path = $entry->getPathname();
+
+            if (!($entry->isDir() ? @rmdir($path) : @unlink($path))) {
+                $left[] = $path;
             }
         }
 
-        @rmdir($directory);
+        // The directory itself, which rmdir refuses while anything is left in
+        // it - so this says nothing new when a child failed, and everything
+        // when the directory is the one thing that would not go.
+        if (!@rmdir($directory) && is_dir($directory)) {
+            $left[] = $directory;
+        }
+
+        return $left;
     }
 }

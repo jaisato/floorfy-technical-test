@@ -92,12 +92,17 @@ services:
       retries: 5
       start_period: 30s
 
+  # Renders videos. One message at a time, and a render is minutes, which is
+  # why the webhooks have a worker of their own below: given both queues, this
+  # process could not deliver a callback until the video in front of it was
+  # finished, and the separate transport bought nothing.
   worker:
     build:
       context: ./app
       dockerfile: Dockerfile
     restart: unless-stopped
     entrypoint: ["entrypoint-worker.sh"]
+    command: ["async"]
     environment:
       <<: *app-environment
       # The worker exits after either limit and is restarted by the policy above.
@@ -114,6 +119,32 @@ services:
     healthcheck:
       # The worker serves nothing, so this is the only way to see that the
       # process still has everything it needs to render a video.
+      test: ["CMD", "php", "bin/console", "app:health:ready"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Delivers the webhooks. Its own process, so a notification goes out while a
+  # video is being rendered rather than after it; it writes no files, so it
+  # mounts no volumes.
+  callback-worker:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    entrypoint: ["entrypoint-worker.sh"]
+    command: ["callbacks"]
+    environment:
+      <<: *app-environment
+      WORKER_TIME_LIMIT: "3600"
+      WORKER_MEMORY_LIMIT: "128M"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
       test: ["CMD", "php", "bin/console", "app:health:ready"]
       interval: 15s
       timeout: 10s
