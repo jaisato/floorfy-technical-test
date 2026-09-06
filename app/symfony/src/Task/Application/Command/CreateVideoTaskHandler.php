@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Task\Application\Command;
 
 use App\Shared\Application\Clock\Clock;
+use App\Shared\Application\Redaction\Urls;
 use App\Shared\Application\Transaction\Transaction;
 use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Entity\VideoTask;
@@ -12,6 +13,8 @@ use App\Task\Domain\Enum\Transition;
 use App\Task\Domain\Port\PartialVideoRepository;
 use App\Task\Domain\Port\VideoTaskRepository;
 use App\Task\Domain\ValueObject\RenderOptions;
+use Psr\Log\LoggerInterface;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Messenger\MessageBusInterface;
 
@@ -25,6 +28,8 @@ final readonly class CreateVideoTaskHandler
         private Transaction $transaction,
         private MessageBusInterface $commandBus,
         private RenderOptions $defaultRenderOptions,
+        #[Autowire(service: 'monolog.logger.task')]
+        private LoggerInterface $logger,
     ) {
     }
 
@@ -64,7 +69,27 @@ final readonly class CreateVideoTaskHandler
         // Published only once the rows are committed. Dispatching first - or
         // inside the transaction - can hand the worker an id it cannot read,
         // or leave a message behind for a task that was rolled back.
-        $this->commandBus->dispatch(new ProcessVideoTaskCommand($task->id()->value));
+        //
+        // And a publish that fails here is not this request's last chance, so
+        // it is not this request's failure. RecoverTasks looks for exactly the
+        // row this leaves - pending, untouched since the cutoff - and
+        // publishes it again; that sweep is why a lost publish is a delay
+        // rather than a loss, and a broker that was down for one dispatch is
+        // the case it was written for.
+        //
+        // Answered 5xx, as this used to be, it was worse than the crash the
+        // sweep already covers: the idempotency key is released on a retryable
+        // status, so the client's retry created a *second* task with all its
+        // rendering, while the sweep published the first.
+        try {
+            $this->commandBus->dispatch(new ProcessVideoTaskCommand($task->id()->value));
+        } catch (\Throwable $e) {
+            $this->logger->error('Task created but not published; the recovery sweep will publish it', [
+                'task_id' => $task->id()->value,
+                'error' => Urls::scrub($e->getMessage()),
+                'cause' => get_debug_type($e),
+            ]);
+        }
 
         return $task->id()->value;
     }

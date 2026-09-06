@@ -25,10 +25,17 @@ final class RecordingMessageBus implements MessageBusInterface
     {
     }
 
+    /** Set to make the next dispatch fail, as a broker that is down does. */
+    public ?\Throwable $failure = null;
+
     public function dispatch(object $message, array $stamps = []): Envelope
     {
         $this->dispatched[] = $message;
         $this->insideTransaction[] = $this->transaction->running;
+
+        if (null !== $this->failure) {
+            throw $this->failure;
+        }
 
         return new Envelope($message);
     }
