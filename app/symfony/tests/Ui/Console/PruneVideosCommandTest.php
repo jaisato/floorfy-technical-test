@@ -42,6 +42,24 @@ final class PruneVideosCommandTest extends KernelTestCase
         $this->command = new CommandTester(new Application($kernel)->find('app:videos:prune'));
     }
 
+    protected function tearDown(): void
+    {
+        parent::tearDown();
+
+        foreach (glob($this->videosDirectory().'/.staging/*') ?: [] as $file) {
+            @unlink($file);
+        }
+    }
+
+    /** Where the deployment under test puts its videos. */
+    private function videosDirectory(): string
+    {
+        $directory = self::getContainer()->getParameter('app.videos_dir');
+        self::assertIsString($directory);
+
+        return $directory;
+    }
+
     /**
      * @return iterable<string, array{string}>
      */
@@ -88,7 +106,29 @@ final class PruneVideosCommandTest extends KernelTestCase
     public function testAnEmptyDatabaseIsReportedAsNothingToDo(): void
     {
         self::assertSame(Command::SUCCESS, $this->command->execute([]));
-        self::assertStringContainsString('No hay tareas', $this->command->getDisplay());
+        self::assertStringContainsString('No hay nada', $this->command->getDisplay());
+    }
+
+    /**
+     * A run that swept nothing but staging still freed bytes, and saying
+     * "nothing to delete" over them would send whoever reads the cron mail
+     * looking for a volume that is quietly filling.
+     */
+    public function testAStagingSweepWithNoTasksDueIsStillReported(): void
+    {
+        $staging = $this->videosDirectory().'/.staging';
+
+        if (!is_dir($staging)) {
+            mkdir($staging, 0o775, true);
+        }
+
+        $orphan = $staging.'/final_dead-worker.mp4';
+        file_put_contents($orphan, 'half a video');
+        touch($orphan, strtotime('-30 days'));
+
+        self::assertSame(Command::SUCCESS, $this->command->execute(['--older-than' => '1d']));
+        self::assertStringContainsString('0 tarea(s), 1 fichero(s)', $this->command->getDisplay());
+        self::assertFileDoesNotExist($orphan);
     }
 
     public function testAnOldTaskIsPrunedAndReported(): void
@@ -121,7 +161,7 @@ final class PruneVideosCommandTest extends KernelTestCase
         $this->completedTaskFinished('-3 days');
 
         self::assertSame(Command::SUCCESS, $this->command->execute([]));
-        self::assertStringContainsString('No hay tareas', $this->command->getDisplay());
+        self::assertStringContainsString('No hay nada', $this->command->getDisplay());
 
         self::assertSame(Command::SUCCESS, $this->command->execute(['--older-than' => '2d']));
         self::assertStringContainsString('Borradas 1 tarea', $this->command->getDisplay());

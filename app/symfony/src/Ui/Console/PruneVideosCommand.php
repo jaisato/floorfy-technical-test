@@ -75,8 +75,11 @@ final class PruneVideosCommand extends Command
         $before = $this->clock->now()->minusSeconds($seconds);
         $report = $this->prune->run($before, (bool) $input->getOption('dry-run'), $limit);
 
-        if (0 === $report->tasks()) {
-            $io->success(\sprintf('No hay tareas anteriores a %s con vídeos que borrar.', $before->toIso8601()));
+        // Files without tasks is a real outcome: what a killed worker left in
+        // staging is swept whether or not any task came due, and reporting
+        // "nothing to delete" over bytes that just went would be wrong.
+        if (0 === $report->tasks() && 0 === $report->files) {
+            $io->success(\sprintf('No hay nada anterior a %s que borrar.', $before->toIso8601()));
 
             return Command::SUCCESS;
         }
