@@ -223,7 +223,7 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         );
     }
 
-    public function markCallbackNotified(UuidValue $id, string $event, DateTimeValue $now): bool
+    public function markCallbackNotified(UuidValue $id, string $event, DateTimeValue $settledAt, DateTimeValue $now): bool
     {
         if (null !== $this->beforeMarkNotified) {
             ($this->beforeMarkNotified)($id);
@@ -231,7 +231,13 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
 
         $task = $this->tasks[$id->value] ?? null;
 
-        if (null === $task || $task->status()->value !== $event) {
+        // Both halves of the condition the database applies: the status the
+        // notification announced, and the run that announced it - two runs can
+        // end the same way, and only updatedAt tells them apart.
+        if (null === $task
+            || $task->status()->value !== $event
+            || $task->updatedAt()->toDateTimeImmutable() != $settledAt->toDateTimeImmutable()
+        ) {
             return false;
         }
 
@@ -243,6 +249,22 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
     public function clearCallbackNotification(UuidValue $id): void
     {
         unset($this->callbacksNotified[$id->value], $this->callbacksAttempted[$id->value]);
+    }
+
+    public function claimRepublication(UuidValue $id, DateTimeValue $before, DateTimeValue $now): bool
+    {
+        $task = $this->tasks[$id->value] ?? null;
+
+        if (null === $task
+            || VideoTaskStatus::PENDING !== $task->status()
+            || $task->updatedAt()->toDateTimeImmutable() >= $before->toDateTimeImmutable()
+        ) {
+            return false;
+        }
+
+        $this->tasks[$id->value] = self::rowWith($task, $task->status(), $task->finalVideoUrl(), $now);
+
+        return true;
     }
 
     public function claimCallbackNotification(UuidValue $id, DateTimeValue $before, DateTimeValue $now): bool

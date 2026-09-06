@@ -291,11 +291,46 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
     {
         $task = $this->storedTask();
 
-        self::assertTrue($this->repository->markCallbackNotified($task->id(), $task->status()->value, $this->now));
+        self::assertTrue($this->repository->markCallbackNotified($task->id(), $task->status()->value, $task->updatedAt(), $this->now));
         self::assertNotNull($this->connection()->fetchOne('SELECT callback_notified_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
 
         $this->repository->clearCallbackNotification($task->id());
         self::assertNull($this->connection()->fetchOne('SELECT callback_notified_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
+    }
+
+    /**
+     * Two runs of one task can end the same way, so the status does not say
+     * which of them a delivery was announcing. Run A ends failed and its
+     * delivery is slow; a retry runs B, which fails too; A's mark was then
+     * accepted for B, and when B's own notification was lost the sweep found
+     * callback_notified_at set and never offered the task again. The instant
+     * the run settled is what tells them apart.
+     */
+    public function testAMarkFromAnEarlierRunIsRefusedEvenWhenBothEndedTheSameWay(): void
+    {
+        $task = $this->storedTask();
+        $task->markProcessing($this->now);
+        $task->markFailed('first', $this->now);
+        $this->repository->save($task);
+        $runA = $task->updatedAt();
+
+        // The retry, and a second failure a minute later.
+        $later = $this->now->minusSeconds(-60);
+        $task->retry($later);
+        $task->markProcessing($later);
+        $task->markFailed('second', $later);
+        $this->repository->save($task);
+
+        self::assertFalse(
+            $this->repository->markCallbackNotified($task->id(), VideoTaskStatus::FAILED->value, $runA, $this->now),
+            "the first run's late delivery does not answer for the second",
+        );
+        self::assertNull($this->connection()->fetchOne('SELECT callback_notified_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
+
+        self::assertTrue(
+            $this->repository->markCallbackNotified($task->id(), VideoTaskStatus::FAILED->value, $task->updatedAt(), $this->now),
+            'the run that is actually settled there still marks',
+        );
     }
 
     /**

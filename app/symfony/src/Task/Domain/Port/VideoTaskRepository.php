@@ -100,6 +100,24 @@ interface VideoTaskRepository
     public function listUnclaimedSince(DateTimeValue $before, int $limit): array;
 
     /**
+     * Takes an unclaimed task for this sweep, so the next one leaves it alone
+     * for a whole window.
+     *
+     * Publishing again is safe to repeat - a task already being processed
+     * refuses the claim - but repeating it is not free: a task waiting its turn
+     * in a busy broker is still unclaimed and still untouched, so every run of
+     * the documented cron published another copy of the same message, and a
+     * backlog of long renders turned into a queue of no-ops behind them.
+     * Bumping updatedAt is what takes it out of listUnclaimedSince() until the
+     * window has passed again, and it says nothing else: for a pending task
+     * that column is only ever read as "how long has this sat here".
+     *
+     * @return bool false when another sweep took it first, or a worker already
+     *              claimed the task, in which case there is nothing to publish
+     */
+    public function claimRepublication(UuidValue $id, DateTimeValue $before, DateTimeValue $now): bool;
+
+    /**
      * Settled tasks that asked for a callback and never got one, untouched
      * since the cutoff: the same lost-publish problem, at the other end.
      *
@@ -138,12 +156,19 @@ interface VideoTaskRepository
      * sweep looks for settled tasks whose callback was never delivered, this
      * row said it had been, and the client was never told the retry completed.
      *
-     * @param string $event the status the delivered notification announced
+     * The status alone does not identify the run - two runs of one task can
+     * both end `failed`, and the first one's late delivery was then accepted
+     * for the second - so the instant that run settled is part of the
+     * condition. Every terminal transition writes it, and neither this mark
+     * nor the sweep's claim touches it afterwards.
+     *
+     * @param string        $event     the status the delivered notification announced
+     * @param DateTimeValue $settledAt the task's updatedAt when the notification was read
      *
      * @return bool false when the task no longer stands there, so the mark was
      *              not written and the notification this run owes is still owed
      */
-    public function markCallbackNotified(UuidValue $id, string $event, DateTimeValue $now): bool;
+    public function markCallbackNotified(UuidValue $id, string $event, DateTimeValue $settledAt, DateTimeValue $now): bool;
 
     /**
      * Forgets that a callback was ever delivered for this task.

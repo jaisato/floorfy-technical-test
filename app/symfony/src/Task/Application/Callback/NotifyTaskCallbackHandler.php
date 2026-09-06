@@ -57,6 +57,10 @@ final readonly class NotifyTaskCallbackHandler
             return;
         }
 
+        // Read before the delivery, which is what makes it this run's: the
+        // task may settle again while the endpoint takes its time.
+        $settledAt = $task->updatedAt();
+
         $summary = VideoTaskSummaryView::fromTask($task, $this->partials->listByTaskId($id), $this->urls->absolute($task->finalVideoUrl()));
 
         try {
@@ -85,8 +89,10 @@ final readonly class NotifyTaskCallbackHandler
         // landing in that window re-renders and settles again: marked all the
         // same, this notification answered for a run whose own never went out,
         // and the sweep - the only thing that would have caught it - was told
-        // there was nothing owed.
-        $marked = $this->tasks->markCallbackNotified($id, $message->event, $this->clock->now());
+        // there was nothing owed. The status is not enough to tell the two
+        // runs apart when both ended the same way; the instant this one
+        // settled is.
+        $marked = $this->tasks->markCallbackNotified($id, $message->event, $settledAt, $this->clock->now());
 
         $this->logger->info('Callback delivered', [
             'task_id' => $id->value,

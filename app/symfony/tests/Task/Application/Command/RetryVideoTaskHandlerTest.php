@@ -60,7 +60,7 @@ final class RetryVideoTaskHandlerTest extends TestCase
     public function testRetryingForgetsThatTheEarlierRunsCallbackWasDelivered(): void
     {
         $task = $this->failedTask();
-        $this->tasks->markCallbackNotified($task->id(), $task->status()->value, $this->clock->now());
+        $this->tasks->markCallbackNotified($task->id(), $task->status()->value, $task->updatedAt(), $this->clock->now());
 
         $this->handler()(new RetryVideoTaskCommand($task->id()->value));
 

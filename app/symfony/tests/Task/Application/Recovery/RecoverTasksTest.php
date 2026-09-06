@@ -58,6 +58,38 @@ final class RecoverTasksTest extends TestCase
         self::assertSame([], $this->bus->dispatched);
     }
 
+    /**
+     * The same rule the callback sweep already followed, on the other branch.
+     * A task waiting its turn in a busy broker is still pending and still
+     * untouched, so every run of the documented cron published another copy of
+     * a message that is not lost at all - a backlog of long renders grew a
+     * queue of no-ops behind it, delaying the very work it was meant to
+     * recover.
+     */
+    public function testATaskThisSweepAlreadyPublishedIsNotPublishedAgain(): void
+    {
+        $task = $this->pendingTask('2026-03-01T09:00:00+00:00');
+
+        self::assertSame([$task->id()->value], $this->recover()->run($this->cutoff())->requeuedTaskIds);
+
+        // The next run, with the message still queued behind the backlog.
+        $this->bus->dispatched = [];
+        self::assertSame([], $this->recover()->run($this->cutoff())->requeuedTaskIds);
+        self::assertSame([], $this->bus->dispatched);
+    }
+
+    /** A dry run reports what a real one would do, and must leave it able to. */
+    public function testADryRunClaimsNothing(): void
+    {
+        $task = $this->pendingTask('2026-03-01T09:00:00+00:00');
+
+        self::assertSame([$task->id()->value], $this->recover()->run($this->cutoff(), dryRun: true)->requeuedTaskIds);
+        self::assertSame([], $this->bus->dispatched);
+
+        self::assertSame([$task->id()->value], $this->recover()->run($this->cutoff())->requeuedTaskIds);
+        self::assertEquals([new ProcessVideoTaskCommand($task->id()->value)], $this->bus->dispatched);
+    }
+
     public function testATaskAlreadyBeingProcessedIsNotDisturbed(): void
     {
         $task = $this->pendingTask('2026-03-01T09:00:00+00:00');
@@ -79,7 +111,7 @@ final class RecoverTasksTest extends TestCase
     public function testACallbackAlreadyDeliveredIsNotSentTwice(): void
     {
         $task = $this->settledTask('2026-03-01T09:00:00+00:00', 'https://client.example/hook');
-        $this->tasks->markCallbackNotified($task->id(), $task->status()->value, DateTimeValue::fromString('2026-03-01T09:00:01+00:00'));
+        $this->tasks->markCallbackNotified($task->id(), $task->status()->value, $task->updatedAt(), DateTimeValue::fromString('2026-03-01T09:00:01+00:00'));
 
         self::assertSame([], $this->recover()->run($this->cutoff())->renotifiedTaskIds);
     }
