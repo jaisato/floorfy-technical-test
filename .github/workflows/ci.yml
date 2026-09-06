@@ -76,6 +76,11 @@ jobs:
     runs-on: ubuntu-24.04
 
     services:
+      # Credentials for containers that live and die with this job. They are
+      # spelled out rather than shortened to `app` / `root` on purpose: a bare
+      # token next to a key named *_PASSWORD, or inside a user:pass@host DSN, is
+      # what a leaked credential looks like, and secret scanners report it as
+      # one. A value that says what it is cannot be mistaken for a real one.
       mysql:
         image: mysql:8.0
         env:
@@ -96,7 +101,7 @@ jobs:
         image: rabbitmq:3.13-alpine
         env:
           RABBITMQ_DEFAULT_USER: app
-          RABBITMQ_DEFAULT_PASS: app
+          RABBITMQ_DEFAULT_PASS: app_ci_password
         ports:
           - 5672:5672
         options: >-
