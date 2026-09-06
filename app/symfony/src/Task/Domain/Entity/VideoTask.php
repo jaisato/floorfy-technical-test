@@ -146,6 +146,15 @@ final class VideoTask
      * FAILED is an accepted starting point: the dead-letter queue exists so an
      * operator can requeue a task once the cause is fixed, and a status nothing
      * can leave would make `messenger:failed:retry` a no-op.
+     *
+     * Starting a run clears what the previous one left, the same three fields
+     * retry() clears - that endpoint is one way in here, `messenger:failed:retry`
+     * is the other, and only the first went through retry(). A task replayed
+     * from the failure transport after the retention sweep had reclaimed its
+     * files kept prunedAt: it rendered a new video, told clients its files had
+     * been reclaimed, and - because prunedAt is exactly what excludes a row
+     * from the sweep - those new files were the one set nothing would ever
+     * clean up again.
      */
     public function markProcessing(DateTimeValue $now): void
     {
@@ -154,6 +163,10 @@ final class VideoTask
             [VideoTaskStatus::PENDING, VideoTaskStatus::PROCESSING, VideoTaskStatus::FAILED],
             $now,
         );
+
+        $this->errorMessage = null;
+        $this->finalVideoUrl = null;
+        $this->prunedAt = null;
     }
 
     /**

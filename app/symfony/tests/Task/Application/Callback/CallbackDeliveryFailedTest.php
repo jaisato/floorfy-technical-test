@@ -70,4 +70,33 @@ final class CallbackDeliveryFailedTest extends TestCase
         self::assertTrue($failure->isPermanent());
         self::assertStringContainsString('dirección privada', $failure->getMessage());
     }
+
+    /**
+     * Redacting the URL we were handed is only half of it: Symfony's transport
+     * exceptions quote the whole request URL back, so the cause's own message
+     * put the credentials straight back into the line.
+     */
+    public function testTheCausesMessageIsRedactedToo(): void
+    {
+        $failure = CallbackDeliveryFailed::unreachable(
+            'https://client.example/hook',
+            new \RuntimeException('Could not resolve host for "https://bot:s3cr3t@client.example/hook?token=abcdef".'),
+        );
+
+        self::assertStringNotContainsString('s3cr3t', $failure->getMessage());
+        self::assertStringNotContainsString('abcdef', $failure->getMessage());
+        self::assertStringContainsString('Could not resolve host for "https://client.example/hook?…".', $failure->getMessage());
+    }
+
+    /** The class of what failed is the part of the chain worth keeping. */
+    public function testTheCauseIsNamedByClassRatherThanChained(): void
+    {
+        $failure = CallbackDeliveryFailed::unreachable('https://client.example/hook', new \DomainException('timeout'));
+
+        self::assertStringContainsString('DomainException', $failure->getMessage());
+        self::assertNull(
+            $failure->getPrevious(),
+            'a chained cause travels into the failure transport with its message intact',
+        );
+    }
 }

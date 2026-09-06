@@ -17,12 +17,20 @@ namespace App\Task\Application\Callback;
  * once the retries are spent, into the failure transport, where it is readable
  * by anyone who operates either. The task id is logged as its own field, so
  * nothing is lost by dropping the query.
+ *
+ * That applies to what a lower layer said as well. Symfony's transport
+ * exceptions quote the whole request URL back - `... for
+ * "https://bot:s3cr3t@client.example/hook?token=…"` - so a cause's message is
+ * scrubbed the same way before it is repeated here, and the cause is named by
+ * class rather than chained: a previous exception travels into the failure
+ * transport with its message intact, which would put back exactly what the
+ * scrub took out.
  */
 final class CallbackDeliveryFailed extends \RuntimeException
 {
-    private function __construct(string $message, private readonly bool $permanent, ?\Throwable $previous = null)
+    private function __construct(string $message, private readonly bool $permanent)
     {
-        parent::__construct($message, 0, $previous);
+        parent::__construct($message);
     }
 
     public function isPermanent(): bool
@@ -32,7 +40,7 @@ final class CallbackDeliveryFailed extends \RuntimeException
 
     public static function refused(string $url, \Throwable $cause): self
     {
-        return new self(\sprintf('La URL de callback fue rechazada: %s', $cause->getMessage()), true, $cause);
+        return new self(\sprintf('La URL de callback fue rechazada: %s', self::explain($cause)), true);
     }
 
     public static function unsigned(): self
@@ -47,7 +55,35 @@ final class CallbackDeliveryFailed extends \RuntimeException
 
     public static function unreachable(string $url, \Throwable $cause): self
     {
-        return new self(\sprintf('No se pudo entregar la notificación a %s: %s', self::redact($url), $cause->getMessage()), false, $cause);
+        return new self(\sprintf('No se pudo entregar la notificación a %s: %s', self::redact($url), self::explain($cause)), false);
+    }
+
+    /**
+     * What the lower layer said, with every URL in it redacted, and the class
+     * that said it - the part of the lost exception chain worth keeping.
+     */
+    private static function explain(\Throwable $cause): string
+    {
+        return \sprintf('%s (%s)', self::scrub($cause->getMessage()), get_debug_type($cause));
+    }
+
+    /**
+     * Redacts every URL in a piece of text that was not written here.
+     *
+     * The trailing punctuation of the sentence around it is not part of the
+     * URL, and leaving it inside would only mean it is dropped with the query.
+     */
+    private static function scrub(string $text): string
+    {
+        return preg_replace_callback(
+            '~[a-z][a-z0-9+.\-]*://[^\s"\'<>]+~i',
+            static function (array $match): string {
+                $url = rtrim($match[0], '.,;:!?)]}');
+
+                return self::redact($url).substr($match[0], \strlen($url));
+            },
+            $text,
+        ) ?? $text;
     }
 
     /**

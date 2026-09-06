@@ -29,7 +29,7 @@ use Doctrine\DBAL\Driver\Middleware\AbstractDriverMiddleware;
  */
 final class SqliteBinaryCollationMiddleware implements Middleware
 {
-    public const COLLATION = 'utf8mb4_bin';
+    public const string COLLATION = 'utf8mb4_bin';
 
     public function wrap(Driver $driver): Driver
     {

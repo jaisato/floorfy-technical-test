@@ -78,10 +78,23 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
     {
         // One statement, so the database arbitrates. Read-then-write would let
         // two workers both see "pending" and both start.
+        //
+        // The three nulls are what VideoTask::markProcessing() writes, and the
+        // reason this statement cannot just set the status: a run starting
+        // carries none of the previous one's outcome. prunedAt is the one that
+        // does damage left behind - a task replayed from the failure transport
+        // after the retention sweep had reclaimed its files rendered a new
+        // video while still telling clients its files were gone, and prunedAt
+        // is exactly what excludes a row from the sweep, so nothing would ever
+        // clean the new ones up.
         $affected = $this->em->getConnection()->executeStatement(
             <<<'SQL'
                 UPDATE video_tasks
-                   SET status = :processing, updated_at = :now
+                   SET status = :processing,
+                       updated_at = :now,
+                       error_message = NULL,
+                       final_video_url = NULL,
+                       pruned_at = NULL
                  WHERE id = :id
                    AND (status = :pending
                         OR status = :failed
