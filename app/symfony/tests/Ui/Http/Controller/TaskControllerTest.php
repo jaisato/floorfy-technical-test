@@ -279,7 +279,7 @@ final class TaskControllerTest extends ApiTestCase
 
         $this->connection()->executeStatement(
             "UPDATE video_tasks SET status = 'completed', final_video_url = ? WHERE id = ?",
-            ['http://localhost/videos/final_'.$taskId.'.mp4', $taskId],
+            ['/videos/final_'.$taskId.'.mp4', $taskId],
         );
 
         $this->client->request('GET', '/api/tasks/'.$taskId.'/final');

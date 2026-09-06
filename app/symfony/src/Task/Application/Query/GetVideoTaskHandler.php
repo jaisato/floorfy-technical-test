@@ -8,10 +8,10 @@ use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Application\DTO\PartialVideoView;
 use App\Task\Application\DTO\VideoTaskSummaryView;
 use App\Task\Application\DTO\VideoTaskView;
+use App\Task\Application\Url\VideoUrls;
 use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Port\PartialVideoRepository;
 use App\Task\Domain\Port\VideoTaskRepository;
-use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 
 #[AsMessageHandler(bus: 'messenger.bus.query')]
@@ -20,8 +20,7 @@ final readonly class GetVideoTaskHandler
     public function __construct(
         private VideoTaskRepository $tasks,
         private PartialVideoRepository $partials,
-        #[Autowire(param: 'app.public_base_url')]
-        private string $publicBaseUrl,
+        private VideoUrls $urls,
     ) {
     }
 
@@ -47,21 +46,19 @@ final readonly class GetVideoTaskHandler
         $partials = $this->partials->listByTaskId($id);
 
         return new VideoTaskView(
-            VideoTaskSummaryView::fromTask($task, $partials),
+            VideoTaskSummaryView::fromTask($task, $partials, $this->urls->absolute($task->finalVideoUrl())),
             array_map($this->toView(...), $partials),
         );
     }
 
     private function toView(PartialVideo $partial): PartialVideoView
     {
-        $path = $partial->videoPath();
-
         return new PartialVideoView(
             $partial->id()->value,
             $partial->imageUrl(),
             $partial->transition()->value,
             $partial->status()->value,
-            null === $path ? null : rtrim($this->publicBaseUrl, '/').$path,
+            $this->urls->absolute($partial->videoPath()),
             $partial->errorMessage(),
         );
     }

@@ -19,6 +19,11 @@ parameters:
     # a new request.
     app.idempotency_ttl_seconds: '%env(int:IDEMPOTENCY_TTL_SECONDS)%'
 
+    # How long a signed video URL stays valid. Long enough to start playing a
+    # video the API just handed over, short enough that a leaked link is not a
+    # permanent one.
+    app.video_url_ttl_seconds: '%env(int:VIDEO_URL_TTL_SECONDS)%'
+
     # Budget for the ffmpeg probe of /health/ready. A readiness answer that
     # takes longer than the prober's own timeout is worse than a failed one.
     app.health_probe_timeout: 5

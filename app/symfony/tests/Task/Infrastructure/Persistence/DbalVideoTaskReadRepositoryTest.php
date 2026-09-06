@@ -10,6 +10,7 @@ use App\Task\Application\Query\GetVideoTaskHandler;
 use App\Task\Application\Query\GetVideoTaskQuery;
 use App\Task\Application\ReadModel\TaskListing;
 use App\Task\Application\ReadModel\VideoTaskReadRepository;
+use App\Task\Application\Url\VideoUrls;
 use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\Enum\Transition;
@@ -230,7 +231,7 @@ final class DbalVideoTaskReadRepositoryTest extends DatabaseTestCase
         $now = DateTimeValue::fromString('2026-01-02T10:00:00Z');
         $task = $this->storedTask('2026-01-02T10:00:00Z');
         $task->markProcessing($now);
-        $task->markCompleted('http://localhost/videos/final.mp4', DateTimeValue::fromString('2026-01-02T10:05:00Z'));
+        $task->markCompleted('/videos/final.mp4', DateTimeValue::fromString('2026-01-02T10:05:00Z'));
         $this->tasks->save($task);
 
         $part = PartialVideo::create($task->id(), 'https://example.com/a.png', Transition::PAN, 0, $now);
@@ -238,11 +239,21 @@ final class DbalVideoTaskReadRepositoryTest extends DatabaseTestCase
         $this->partials->save($part);
         $this->entityManager->clear();
 
-        $single = new GetVideoTaskHandler($this->tasks, $this->partials, 'http://localhost')(new GetVideoTaskQuery($task->id()->value));
+        $single = new GetVideoTaskHandler($this->tasks, $this->partials, self::urls())(new GetVideoTaskQuery($task->id()->value));
 
         self::assertNotNull($single);
         self::assertSame($single->summary->toArray(), $this->listing->list(new TaskListing())->items[0]->toArray());
         self::assertSame('2026-01-02T10:05:00+00:00', $single->summary->updatedAt);
+    }
+
+    /** The same URLs the container's read repository builds: base URL, unsigned. */
+    private static function urls(): VideoUrls
+    {
+        $urls = self::getContainer()->get(VideoUrls::class);
+
+        self::assertInstanceOf(VideoUrls::class, $urls);
+
+        return $urls;
     }
 
     private function storedTask(string $createdAt): VideoTask

@@ -8,10 +8,12 @@ use App\Shared\Domain\ValueObject\DateTimeValue;
 use App\Task\Application\Callback\CallbackDeliveryFailed;
 use App\Task\Application\Callback\NotifyTaskCallback;
 use App\Task\Application\Callback\NotifyTaskCallbackHandler;
+use App\Task\Application\Url\VideoUrls;
 use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\Enum\Transition;
 use App\Tests\Support\FakeCallbackDelivery;
+use App\Tests\Support\FixedClock;
 use App\Tests\Support\InMemoryPartialVideoRepository;
 use App\Tests\Support\InMemoryVideoTaskRepository;
 use App\Tests\Support\RecordingLogger;
@@ -39,7 +41,7 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
     {
         $task = VideoTask::create(['images' => []], $this->now, 'https://client.example/hook');
         $task->markProcessing($this->now);
-        $task->markCompleted('http://localhost/videos/final.mp4', $this->now);
+        $task->markCompleted('/videos/final.mp4', $this->now);
         $this->tasks->save($task);
 
         $part = PartialVideo::create($task->id(), 'https://example.com/a.png', Transition::PAN, 0, $this->now);
@@ -54,7 +56,7 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         self::assertSame($task->id()->value, $request->taskId);
         self::assertSame('completed', $request->event);
         self::assertSame('completed', $request->body['status']);
-        self::assertSame('http://localhost/videos/final.mp4', $request->body['final_video_url']);
+        self::assertSame('http://localhost:8080/videos/final.mp4', $request->body['final_video_url']);
         self::assertSame(['completed' => 1, 'failed' => 0, 'pending' => 0, 'total' => 1, 'percent' => 100], $request->body['progress']);
         self::assertArrayNotHasKey('partial_videos', $request->body, 'the body is the summary, not the full view');
     }
@@ -143,6 +145,6 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
 
     private function handler(): NotifyTaskCallbackHandler
     {
-        return new NotifyTaskCallbackHandler($this->tasks, $this->partials, $this->delivery, $this->logger);
+        return new NotifyTaskCallbackHandler($this->tasks, $this->partials, $this->delivery, new VideoUrls(new FixedClock(), 'http://localhost:8080', '', 3600), $this->logger);
     }
 }

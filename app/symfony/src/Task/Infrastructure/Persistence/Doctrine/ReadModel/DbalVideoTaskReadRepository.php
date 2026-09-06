@@ -9,6 +9,7 @@ use App\Task\Application\DTO\VideoTaskSummaryView;
 use App\Task\Application\ReadModel\TaskListing;
 use App\Task\Application\ReadModel\TaskPage;
 use App\Task\Application\ReadModel\VideoTaskReadRepository;
+use App\Task\Application\Url\VideoUrls;
 use App\Task\Domain\Enum\PartialVideoStatus;
 use App\Task\Domain\ValueObject\TaskProgress;
 use Doctrine\DBAL\ArrayParameterType;
@@ -27,8 +28,10 @@ use Doctrine\DBAL\Types\Types;
  */
 final readonly class DbalVideoTaskReadRepository implements VideoTaskReadRepository
 {
-    public function __construct(private Connection $connection)
-    {
+    public function __construct(
+        private Connection $connection,
+        private VideoUrls $urls,
+    ) {
     }
 
     public function list(TaskListing $listing): TaskPage
@@ -55,7 +58,7 @@ final readonly class DbalVideoTaskReadRepository implements VideoTaskReadReposit
                     $byStatus[PartialVideoStatus::FAILED->value] ?? 0,
                     $byStatus[PartialVideoStatus::PENDING->value] ?? 0,
                 ),
-                self::nullableString($row, 'final_video_url'),
+                $this->urls->absolute(self::nullableString($row, 'final_video_url')),
                 self::nullableString($row, 'error_message'),
                 self::nullableString($row, 'callback_url'),
                 self::instant($row, 'created_at'),
