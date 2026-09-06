@@ -71,6 +71,10 @@ final class PartialVideoTest extends TestCase
 
         self::assertTrue($partial->status()->isPending());
         self::assertNull($partial->videoPath());
+        // The error belonged to the attempt that ended; this part is waiting
+        // for the next one. Left behind, GET /api/tasks/{id} showed a pending
+        // part next to the reason a previous attempt failed.
+        self::assertNull($partial->errorMessage());
         self::assertSame(self::LATER, $partial->updatedAt()->toIso8601());
     }
 

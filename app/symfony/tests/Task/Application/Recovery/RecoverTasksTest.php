@@ -9,6 +9,7 @@ use App\Task\Application\Callback\NotifyTaskCallback;
 use App\Task\Application\Command\ProcessVideoTaskCommand;
 use App\Task\Application\Recovery\RecoverTasks;
 use App\Task\Domain\Entity\VideoTask;
+use App\Tests\Support\FixedClock;
 use App\Tests\Support\InMemoryVideoTaskRepository;
 use App\Tests\Support\RecordingMessageBus;
 use PHPUnit\Framework\TestCase;
@@ -83,6 +84,47 @@ final class RecoverTasksTest extends TestCase
         self::assertSame([], $this->recover()->run($this->cutoff())->renotifiedTaskIds);
     }
 
+    /**
+     * A notification the sweep published a moment ago is not lost: it is on
+     * its way, or the transport is retrying it. Neither stamps
+     * callback_notified_at, so every run in between published another one and
+     * the client got the same POST as many times as the sweep ran.
+     */
+    public function testANotificationThisSweepAlreadyPublishedIsNotPublishedAgain(): void
+    {
+        $task = $this->settledTask('2026-03-01T09:00:00+00:00', 'https://client.example/hook');
+
+        self::assertSame([$task->id()->value], $this->recover()->run($this->cutoff())->renotifiedTaskIds);
+
+        // The next run, with the delivery still in flight.
+        $this->bus->dispatched = [];
+        self::assertSame([], $this->recover()->run($this->cutoff())->renotifiedTaskIds);
+        self::assertSame([], $this->bus->dispatched);
+    }
+
+    /** Once the attempt is itself older than the cutoff, it was lost after all. */
+    public function testANotificationWhoseAttemptIsOlderThanTheCutoffIsPublishedAgain(): void
+    {
+        $task = $this->settledTask('2026-03-01T09:00:00+00:00', 'https://client.example/hook');
+        $this->recover()->run($this->cutoff());
+        $this->bus->dispatched = [];
+
+        // An hour later: the attempt at 10:00 is now well before the window.
+        $later = DateTimeValue::fromString('2026-03-01T11:00:00+00:00')->minusSeconds(600);
+        $recover = new RecoverTasks($this->tasks, $this->bus, new FixedClock('2026-03-01T11:00:00+00:00'), new NullLogger());
+
+        self::assertSame([$task->id()->value], $recover->run($later)->renotifiedTaskIds);
+    }
+
+    /** A dry run must not take the claim it is only reporting on. */
+    public function testADryRunLeavesTheNotificationForARealRunToTake(): void
+    {
+        $task = $this->settledTask('2026-03-01T09:00:00+00:00', 'https://client.example/hook');
+
+        self::assertSame(1, $this->recover()->run($this->cutoff(), dryRun: true)->renotified());
+        self::assertSame([$task->id()->value], $this->recover()->run($this->cutoff())->renotifiedTaskIds);
+    }
+
     public function testATaskThatAskedForNoCallbackIsNeverOffered(): void
     {
         $this->settledTask('2026-03-01T09:00:00+00:00', null);
@@ -121,7 +163,7 @@ final class RecoverTasksTest extends TestCase
 
     private function recover(): RecoverTasks
     {
-        return new RecoverTasks($this->tasks, $this->bus, new NullLogger());
+        return new RecoverTasks($this->tasks, $this->bus, new FixedClock('2026-03-01T10:00:00+00:00'), new NullLogger());
     }
 
     /** Ten minutes before "now", the window the command defaults to. */

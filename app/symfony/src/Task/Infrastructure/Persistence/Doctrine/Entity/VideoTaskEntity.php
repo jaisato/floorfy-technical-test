@@ -68,6 +68,20 @@ class VideoTaskEntity
     #[ORM\Column(name: 'callback_notified_at', type: Types::DATETIME_IMMUTABLE, nullable: true)]
     public ?\DateTimeImmutable $callbackNotifiedAt = null;
 
+    /**
+     * When the recovery sweep last published a notification for this task.
+     *
+     * The sweep republishes what it believes was lost, and "not delivered yet"
+     * is not the same as "lost": a delivery the transport is still retrying
+     * has neither reached the client nor stamped callbackNotifiedAt, so every
+     * sweep in the meantime published another one and the client got the POST
+     * again and again. Stamping the attempt makes the sweep's own republish
+     * something it can see, so it waits out the same cutoff before trying that
+     * task once more.
+     */
+    #[ORM\Column(name: 'callback_attempted_at', type: Types::DATETIME_IMMUTABLE, nullable: true)]
+    public ?\DateTimeImmutable $callbackAttemptedAt = null;
+
     /** When the retention job deleted this task's videos, if it has. */
     #[ORM\Column(name: 'pruned_at', type: Types::DATETIME_IMMUTABLE, nullable: true)]
     public ?\DateTimeImmutable $prunedAt = null;

@@ -170,6 +170,13 @@ final class PartialVideo
     {
         $this->status = PartialVideoStatus::PENDING;
         $this->videoPath = null;
+        // The error belonged to the attempt that just ended, and this part is
+        // now waiting for the next one. Left behind, GET /api/tasks/{id}
+        // reported a pending part alongside the reason a previous attempt
+        // failed, which reads as a part that failed and is somehow still
+        // queued - and outlives the retry that succeeds without going through
+        // markCompleted, such as one whose task is cancelled first.
+        $this->errorMessage = null;
         $this->updatedAt = $now;
     }
 }
