@@ -15,6 +15,9 @@ use Doctrine\ORM\Mapping as ORM;
 // lookups (the worker's status check) use the same indexes as a prefix.
 #[ORM\Index(columns: ['status', 'created_at', 'id'], name: 'idx_video_tasks_status_created_at_id')]
 #[ORM\Index(columns: ['created_at', 'id'], name: 'idx_video_tasks_created_at_id')]
+// The retention job scans settled tasks last touched before a cutoff that have
+// not been pruned yet.
+#[ORM\Index(columns: ['pruned_at', 'updated_at'], name: 'idx_video_tasks_pruned_at_updated_at')]
 class VideoTaskEntity
 {
     #[ORM\Id]
@@ -52,4 +55,8 @@ class VideoTaskEntity
 
     #[ORM\Column(name: 'updated_at', type: Types::DATETIME_IMMUTABLE)]
     public \DateTimeImmutable $updatedAt;
+
+    /** When the retention job deleted this task's videos, if it has. */
+    #[ORM\Column(name: 'pruned_at', type: Types::DATETIME_IMMUTABLE, nullable: true)]
+    public ?\DateTimeImmutable $prunedAt = null;
 }

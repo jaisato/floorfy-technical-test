@@ -12,7 +12,7 @@ PHP         := $(COMPOSE) exec -T php php
 COMPOSER_FLAGS := --ignore-platform-req=ext-amqp
 
 .DEFAULT_GOAL := help
-.PHONY: help up down build logs sh migrate worker install test test-unit test-func test-mysql test-ffmpeg stan cs cs-fix rector lint check
+.PHONY: help up down build logs sh migrate worker prune ready install test test-unit test-func test-mysql test-ffmpeg stan cs cs-fix rector lint check
 
 help: ## List the available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -39,6 +39,12 @@ migrate: ## Apply pending migrations inside the stack
 
 worker: ## Follow the worker's logs
 	$(COMPOSE) logs -f worker
+
+ready: ## Run the readiness checks inside the stack (0 = ready)
+	$(PHP) bin/console app:health:ready
+
+prune: ## Delete the videos of tasks settled more than RETENTION ago (default 30d)
+	$(PHP) bin/console app:videos:prune --older-than=$(or $(RETENTION),30d)
 
 ## ---- development -----------------------------------------------------------
 
