@@ -147,6 +147,19 @@ final class PartialVideo
     }
 
     /**
+     * The clip's file is gone; the part keeps its status and its error.
+     *
+     * The URL goes, because it would point at a file that no longer exists.
+     * The status stays "completed": the part was rendered, and a retry finds no
+     * file and renders it again, which is exactly right.
+     */
+    public function markPruned(DateTimeValue $now): void
+    {
+        $this->videoPath = null;
+        $this->updatedAt = $now;
+    }
+
+    /**
      * Puts a failed part back in the queue so the next attempt retries it.
      *
      * Without this a single transient download error would pin the part at

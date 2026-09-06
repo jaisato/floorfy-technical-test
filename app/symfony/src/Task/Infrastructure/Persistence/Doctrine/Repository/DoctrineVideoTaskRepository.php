@@ -39,6 +39,7 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         $entity->finalVideoUrl = $task->finalVideoUrl();
         $entity->errorMessage = $task->errorMessage();
         $entity->updatedAt = $task->updatedAt()->toDateTimeImmutable();
+        $entity->prunedAt = $task->prunedAt()?->toDateTimeImmutable();
 
         $this->em->flush();
     }
@@ -181,6 +182,35 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         }
     }
 
+    public function listPrunable(DateTimeValue $before, int $limit): array
+    {
+        $entities = $this->em->createQueryBuilder()
+            ->select('t')
+            ->from(VideoTaskEntity::class, 't')
+            ->where('t.prunedAt IS NULL')
+            ->andWhere('t.updatedAt < :before')
+            ->andWhere('t.status IN (:settled)')
+            ->orderBy('t.updatedAt', 'ASC')
+            ->setParameter('before', $before->toDateTimeImmutable())
+            ->setParameter('settled', array_map(
+                static fn (VideoTaskStatus $status): string => $status->value,
+                VideoTaskStatus::settled(),
+            ))
+            ->setMaxResults($limit)
+            ->getQuery()
+            ->getResult();
+
+        $tasks = [];
+
+        foreach ($entities as $entity) {
+            if ($entity instanceof VideoTaskEntity) {
+                $tasks[] = $this->toDomain($entity);
+            }
+        }
+
+        return $tasks;
+    }
+
     private function toDomain(VideoTaskEntity $e): VideoTask
     {
         return VideoTask::rehydrate(
@@ -193,6 +223,7 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
             DateTimeValue::fromDateTimeImmutable($e->updatedAt),
             $e->callbackUrl,
             null === $e->renderOptions ? null : RenderOptions::fromArray($e->renderOptions),
+            null === $e->prunedAt ? null : DateTimeValue::fromDateTimeImmutable($e->prunedAt),
         );
     }
 }

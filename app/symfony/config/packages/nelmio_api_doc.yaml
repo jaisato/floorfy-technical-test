@@ -102,6 +102,11 @@ nelmio_api_doc:
                         callback_url: { type: string, nullable: true }
                         created_at: { type: string, format: date-time }
                         updated_at: { type: string, format: date-time }
+                        pruned_at:
+                            type: string
+                            format: date-time
+                            nullable: true
+                            description: 'Cuando la retención borró los vídeos de la tarea; explica un final_video_url nulo en una tarea completada.'
 
                 PartialVideo:
                     type: object

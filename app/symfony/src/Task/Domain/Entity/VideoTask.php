@@ -28,6 +28,8 @@ final class VideoTask
          * existed; the worker falls back to the deployment's defaults.
          */
         private readonly ?RenderOptions $renderOptions,
+        /** When the retention job deleted this task's videos, if it has. */
+        private ?DateTimeValue $prunedAt,
     ) {
     }
 
@@ -44,6 +46,7 @@ final class VideoTask
             $now,
             $callbackUrl,
             $renderOptions,
+            null,
         );
     }
 
@@ -58,8 +61,9 @@ final class VideoTask
         DateTimeValue $updatedAt,
         ?string $callbackUrl = null,
         ?RenderOptions $renderOptions = null,
+        ?DateTimeValue $prunedAt = null,
     ): self {
-        return new self($id, $payload, $status, $finalVideoUrl, $errorMessage, $createdAt, $updatedAt, $callbackUrl, $renderOptions);
+        return new self($id, $payload, $status, $finalVideoUrl, $errorMessage, $createdAt, $updatedAt, $callbackUrl, $renderOptions, $prunedAt);
     }
 
     public function callbackUrl(): ?string
@@ -70,6 +74,26 @@ final class VideoTask
     public function renderOptions(): ?RenderOptions
     {
         return $this->renderOptions;
+    }
+
+    public function prunedAt(): ?DateTimeValue
+    {
+        return $this->prunedAt;
+    }
+
+    /**
+     * The videos are gone; the task itself stays.
+     *
+     * Deleting the row instead would lose the record that the work was done
+     * and let the same request be replayed as new. Clearing the URL is what
+     * stops a client following a link to a file that is no longer there, and
+     * prunedAt is what says why.
+     */
+    public function markPruned(DateTimeValue $now): void
+    {
+        $this->finalVideoUrl = null;
+        $this->prunedAt = $now;
+        $this->updatedAt = $now;
     }
 
     public function id(): UuidValue

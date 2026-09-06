@@ -63,4 +63,18 @@ interface VideoTaskRepository
      * since.
      */
     public function currentStatus(UuidValue $id): ?VideoTaskStatus;
+
+    /**
+     * Settled tasks last touched before the cutoff whose videos are still on
+     * disk: what the retention job has to clean up.
+     *
+     * Only completed, failed and canceled tasks: deleting the files of one
+     * that is still being rendered would break the run in progress.
+     *
+     * @param positive-int $limit how many to return at most, so one run has a
+     *                            bounded cost whatever the backlog is
+     *
+     * @return list<VideoTask>
+     */
+    public function listPrunable(DateTimeValue $before, int $limit): array;
 }

@@ -284,6 +284,7 @@ que no son enteros positivos, rango invertido) es un **400** con `violations`.
   "error": null,
   "created_at": "2026-01-02T03:04:05+00:00",
   "updated_at": "2026-01-02T03:04:09+00:00",
+  "pruned_at": null,
   "partial_videos": [
     {
       "id": "0195…",
@@ -299,6 +300,9 @@ que no son enteros positivos, rango invertido) es un **400** con `violations`.
 
 Estados — tarea: `pending | processing | completed | failed | canceled`; parte:
 `pending | completed | failed`.
+
+`pruned_at` es lo que explica un `final_video_url` nulo en una tarea
+`completed`: sus vídeos los borró la [retención](#retención-de-vídeos).
 
 `progress` cuenta las partes: `percent` es la proporción de partes completadas,
 truncada, así que no llega a `100` mientras quede alguna pendiente o fallida.
@@ -624,11 +628,45 @@ Composer:
 
 ## Operación
 
+### Retención de vídeos
+
+Los ficheros son lo único que crece sin límite: una fila de tarea son unos
+cientos de bytes, un vídeo son megas, y comparten volumen. El comando
+`app:videos:prune` borra el vídeo final, los clips y el directorio de trabajo de
+las tareas **terminadas** (`completed`, `failed` o `canceled`) cuya última
+actualización sea anterior a la ventana:
+
+```bash
+docker compose exec php php bin/console app:videos:prune --older-than=30d --dry-run
+docker compose exec php php bin/console app:videos:prune --older-than=30d
+```
+
+| Opción | Valor |
+|---|---|
+| `--older-than` | ventana de retención: `<n>m`, `<n>h`, `<n>d` o `<n>w` (por defecto `7d`) |
+| `--dry-run` | enumera lo que borraría y no toca nada |
+| `--limit` | máximo de tareas por ejecución (500 por defecto), para que una ejecución tenga coste acotado |
+
+La **tarea no se borra**: se queda con `final_video_url` a null y con
+`pruned_at`. Borrar la fila perdería el registro de que el trabajo se hizo y
+dejaría que la misma petición se creara otra vez como nueva. Las tareas en curso
+nunca se tocan: borrar sus ficheros rompería el render en marcha.
+
+En cron, una vez al día:
+
+```cron
+0 4 * * * cd /ruta/al/repo && docker compose exec -T php php bin/console app:videos:prune --older-than=30d
+```
+
+### Comandos
+
 ```bash
 make logs                 # todos los servicios
 make worker               # sólo el worker
 make sh                   # shell en el contenedor php
 make migrate              # migraciones dentro del stack
+make ready                # comprobaciones de readiness (0 = listo)
+make prune RETENTION=30d  # retención de vídeos
 ```
 
 Mensajes cuyos reintentos se agotaron:

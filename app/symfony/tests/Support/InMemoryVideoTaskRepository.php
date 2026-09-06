@@ -103,6 +103,29 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         return ($this->tasks[$id->value] ?? null)?->status();
     }
 
+    public function listPrunable(DateTimeValue $before, int $limit): array
+    {
+        $prunable = [];
+
+        foreach ($this->tasks as $task) {
+            if (null !== $task->prunedAt()
+                || !\in_array($task->status(), VideoTaskStatus::settled(), true)
+                || $task->updatedAt()->toDateTimeImmutable() >= $before->toDateTimeImmutable()
+            ) {
+                continue;
+            }
+
+            $prunable[] = $task;
+        }
+
+        usort(
+            $prunable,
+            static fn (VideoTask $a, VideoTask $b): int => $a->updatedAt()->toDateTimeImmutable() <=> $b->updatedAt()->toDateTimeImmutable(),
+        );
+
+        return \array_slice($prunable, 0, $limit);
+    }
+
     /** @return list<VideoTask> */
     public function all(): array
     {

@@ -23,6 +23,8 @@ final readonly class VideoTaskSummaryView
         public ?string $callbackUrl,
         public string $createdAt,
         public string $updatedAt,
+        /** When the retention job deleted this task's videos, if it has. */
+        public ?string $prunedAt = null,
     ) {
     }
 
@@ -47,6 +49,7 @@ final readonly class VideoTaskSummaryView
             $task->callbackUrl(),
             $task->createdAt()->toIso8601(),
             $task->updatedAt()->toIso8601(),
+            $task->prunedAt()?->toIso8601(),
         );
     }
 
@@ -62,6 +65,8 @@ final readonly class VideoTaskSummaryView
             'callback_url' => $this->callbackUrl,
             'created_at' => $this->createdAt,
             'updated_at' => $this->updatedAt,
+            // Why a completed task can have no video URL.
+            'pruned_at' => $this->prunedAt,
         ];
     }
 }
