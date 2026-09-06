@@ -42,19 +42,33 @@ final readonly class RetryVideoTaskHandler
     public function __invoke(RetryVideoTaskCommand $command): void
     {
         $id = UuidValue::tryFromString($command->taskId);
-        $task = null === $id ? null : $this->tasks->get($id);
 
-        if (null === $id || null === $task) {
+        // Outside the transaction, so an unknown id is a 404 that locks nothing.
+        if (null === $id || null === $this->tasks->get($id)) {
             throw TaskNotFound::withId($command->taskId);
         }
 
         $now = $this->clock->now();
 
-        $this->transaction->run(function () use ($task, $now): void {
+        $this->transaction->run(function () use ($id, $now): void {
+            // Read again under the row lock, because everything below is
+            // decided from this state and then written back as a whole
+            // aggregate - the one thing a conditional UPDATE cannot express
+            // here, since the parts move with the task.
+            //
+            // Two retries arriving together both read "failed" outside the
+            // lock, both passed the transition check, and the second flushed
+            // its stale copy back to pending - over a task the first retry's
+            // message had already put into processing, which left it claimable
+            // a second time and two workers rendering into the same files. The
+            // lock also holds off the retention job, which decides what to
+            // delete from the very same state.
+            $task = $this->tasks->getForUpdate($id) ?? throw TaskNotFound::withId($id->value);
+
             $this->requeue($task, $now);
         });
 
-        $this->commandBus->dispatch(new ProcessVideoTaskCommand($task->id()->value));
+        $this->commandBus->dispatch(new ProcessVideoTaskCommand($id->value));
     }
 
     private function requeue(VideoTask $task, DateTimeValue $now): void

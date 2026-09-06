@@ -129,9 +129,21 @@ interface VideoTaskRepository
 
     /**
      * Records that the callback for a task was delivered, so the sweep above
-     * stops offering it.
+     * stops offering it - but only while the task still stands where the
+     * delivered notification said it did.
+     *
+     * A delivery takes as long as the endpoint takes, and a task can be
+     * retried and settle again in that time. Written unconditionally, the
+     * in-flight notification of the previous run answered for the new one: the
+     * sweep looks for settled tasks whose callback was never delivered, this
+     * row said it had been, and the client was never told the retry completed.
+     *
+     * @param string $event the status the delivered notification announced
+     *
+     * @return bool false when the task no longer stands there, so the mark was
+     *              not written and the notification this run owes is still owed
      */
-    public function markCallbackNotified(UuidValue $id, DateTimeValue $now): void;
+    public function markCallbackNotified(UuidValue $id, string $event, DateTimeValue $now): bool;
 
     /**
      * Forgets that a callback was ever delivered for this task.

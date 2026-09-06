@@ -79,8 +79,22 @@ final readonly class NotifyTaskCallbackHandler
         // Recorded so the recovery sweep stops offering this task: it looks
         // for settled tasks that asked for a callback and never got one, which
         // is how a publish lost between the commit and the broker is found.
-        $this->tasks->markCallbackNotified($id, $this->clock->now());
+        //
+        // Only while the task still stands where this notification said it
+        // did. The delivery takes as long as the endpoint takes, and a retry
+        // landing in that window re-renders and settles again: marked all the
+        // same, this notification answered for a run whose own never went out,
+        // and the sweep - the only thing that would have caught it - was told
+        // there was nothing owed.
+        $marked = $this->tasks->markCallbackNotified($id, $message->event, $this->clock->now());
 
-        $this->logger->info('Callback delivered', ['task_id' => $id->value, 'event' => $message->event]);
+        $this->logger->info('Callback delivered', [
+            'task_id' => $id->value,
+            'event' => $message->event,
+            // False when the task moved on while this was being delivered. The
+            // delivery still happened; what it does not do is stand in for the
+            // notification the task owes now.
+            'still_current' => $marked,
+        ]);
     }
 }

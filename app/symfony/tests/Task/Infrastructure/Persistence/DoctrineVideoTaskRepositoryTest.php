@@ -233,7 +233,7 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
     {
         $task = $this->storedTask();
 
-        $this->repository->markCallbackNotified($task->id(), $this->now);
+        self::assertTrue($this->repository->markCallbackNotified($task->id(), $task->status()->value, $this->now));
         self::assertNotNull($this->connection()->fetchOne('SELECT callback_notified_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
 
         $this->repository->clearCallbackNotification($task->id());

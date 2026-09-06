@@ -79,7 +79,7 @@ final class RecoverTasksTest extends TestCase
     public function testACallbackAlreadyDeliveredIsNotSentTwice(): void
     {
         $task = $this->settledTask('2026-03-01T09:00:00+00:00', 'https://client.example/hook');
-        $this->tasks->markCallbackNotified($task->id(), DateTimeValue::fromString('2026-03-01T09:00:01+00:00'));
+        $this->tasks->markCallbackNotified($task->id(), $task->status()->value, DateTimeValue::fromString('2026-03-01T09:00:01+00:00'));
 
         self::assertSame([], $this->recover()->run($this->cutoff())->renotifiedTaskIds);
     }

@@ -60,7 +60,7 @@ final class RetryVideoTaskHandlerTest extends TestCase
     public function testRetryingForgetsThatTheEarlierRunsCallbackWasDelivered(): void
     {
         $task = $this->failedTask();
-        $this->tasks->markCallbackNotified($task->id(), $this->clock->now());
+        $this->tasks->markCallbackNotified($task->id(), $task->status()->value, $this->clock->now());
 
         $this->handler()(new RetryVideoTaskCommand($task->id()->value));
 
@@ -162,6 +162,37 @@ final class RetryVideoTaskHandlerTest extends TestCase
         $this->expectException(TaskNotFound::class);
 
         $this->handler()(new RetryVideoTaskCommand('0195c6a0-1c37-7000-8000-0000000000ff'));
+    }
+
+    /**
+     * Two retries of the same task arriving together. Read outside the row
+     * lock, both saw "failed", both passed the transition check, and the
+     * second flushed its stale aggregate back to pending - over a task the
+     * first retry's message had already put into processing, so a second
+     * worker could claim it and render into the same files. Read again under
+     * the lock, the second sees what the first did and the transition refuses
+     * it.
+     */
+    public function testASecondRetryArrivingDuringTheFirstIsRefused(): void
+    {
+        $task = $this->failedTask();
+
+        // The window the lock closes: between this retry's read and its write,
+        // the first retry has already requeued the task and its worker claimed it.
+        $this->tasks->beforeLockedRead = function () use ($task): void {
+            $this->tasks->beforeLockedRead = null;
+            $task->retry($this->clock->now());
+            $this->tasks->claimForProcessing($task->id(), $this->clock->now(), $this->clock->now());
+        };
+
+        $this->expectException(InvalidTaskTransition::class);
+
+        try {
+            $this->handler()(new RetryVideoTaskCommand($task->id()->value));
+        } finally {
+            self::assertSame(VideoTaskStatus::PROCESSING, $task->status(), 'the run under way is left alone');
+            self::assertSame([], $this->bus->dispatched, 'and no second worker is sent after it');
+        }
     }
 
     private function failedTask(): VideoTask
