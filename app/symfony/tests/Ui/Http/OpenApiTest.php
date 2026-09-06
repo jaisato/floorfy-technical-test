@@ -39,6 +39,29 @@ final class OpenApiTest extends WebTestCase
         self::assertStringContainsString('application/json', (string) $this->client->getResponse()->headers->get('Content-Type'));
     }
 
+    /**
+     * The one `servers` entry says where this API answers, and hardcoded it
+     * said port 8080 of whatever machine the *reader's* browser was on: every
+     * generated client and Swagger's "Try it out" called the consumer's own
+     * computer on any deployment but the local one.
+     */
+    public function testTheDocumentNamesTheDeploymentItWasServedBy(): void
+    {
+        self::ensureKernelShutdown();
+        $this->overrideEnv('APP_URL', 'https://videos.example.test');
+
+        try {
+            $this->client = self::createClient();
+            $servers = $this->document()['servers'] ?? null;
+
+            self::assertIsArray($servers);
+            self::assertCount(1, $servers);
+            self::assertSame('https://videos.example.test', $servers[0]['url'] ?? null);
+        } finally {
+            $this->restoreEnvironment();
+        }
+    }
+
     public function testItIsAnOpenApiThreeDocument(): void
     {
         $document = $this->document();

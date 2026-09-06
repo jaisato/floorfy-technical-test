@@ -12,9 +12,14 @@ nelmio_api_doc:
                 `application/problem+json` (RFC 9457).
             version: '1.0.0'
 
+        # La única entrada de `servers`, y sale de APP_URL como todo lo demás
+        # que nombra esta API hacia fuera. Escrita a mano apuntaba al puerto
+        # 8080 de la máquina de quien *lee* el documento: los clientes
+        # generados y el "Try it out" de Swagger llamaban a su propio equipo en
+        # cualquier despliegue que no fuera el local.
         servers:
-            - url: 'http://localhost:8080'
-              description: 'Stack local (docker compose)'
+            - url: '%app.public_base_url%'
+              description: 'La API tal y como la alcanzan los clientes (APP_URL)'
 
         # Both schemes are alternatives, and the empty requirement is one of
         # them: with API_TOKENS empty - the default - nothing is needed.
@@ -99,7 +104,15 @@ nelmio_api_doc:
                         progress: { $ref: '#/components/schemas/Progress' }
                         final_video_url: { type: string, nullable: true }
                         error: { type: string, nullable: true }
-                        callback_url: { type: string, nullable: true }
+                        callback_url:
+                            type: string
+                            nullable: true
+                            description: |
+                                El endpoint de callback sin credenciales: sin userinfo y con la
+                                query sustituida por `?…` cuando la había. Una URL de callback es
+                                del cliente y suele llevar un token; esta representación la sirve
+                                cualquiera que pueda listar tareas.
+                            example: 'https://cliente.example/hooks/video?…'
                         created_at: { type: string, format: date-time }
                         updated_at: { type: string, format: date-time }
                         pruned_at:

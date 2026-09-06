@@ -11,6 +11,7 @@ use App\Task\Domain\Enum\VideoTaskStatus;
 use App\Task\Domain\Port\VideoTaskRepository;
 use App\Task\Domain\ValueObject\RenderOptions;
 use App\Task\Infrastructure\Persistence\Doctrine\Entity\VideoTaskEntity;
+use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\DBAL\LockMode;
 use Doctrine\DBAL\ParameterType;
 use Doctrine\DBAL\Types\Types;
@@ -317,19 +318,42 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
     {
         // Conditional, like the claim on a task: two sweeps running at once
         // both read the row as owed, and only the one whose UPDATE lands gets
-        // to publish. The condition repeats what the listing asked so a
-        // notification delivered in between is not claimed at all.
+        // to publish. The condition repeats the listing's - every clause of
+        // it, and that is the point rather than tidiness. The three callback
+        // columns alone were satisfied by a row a retry had just queued again:
+        // retrying clears all three, so the claim landed on a task that was
+        // pending once more, and the sweep published the *listed* object's
+        // terminal status while the handler built the body from the run now
+        // under way. The client was told the task had failed as it started
+        // over. Status, cutoff and "asked for a callback at all" are what make
+        // a concurrent retry lose the claim.
         $affected = $this->em->getConnection()->executeStatement(
             <<<'SQL'
                 UPDATE video_tasks
                    SET callback_attempted_at = :now
                  WHERE id = :id
+                   AND callback_url IS NOT NULL
                    AND callback_notified_at IS NULL
                    AND callback_abandoned_at IS NULL
+                   AND updated_at < :before
+                   AND status IN (:settled)
                    AND (callback_attempted_at IS NULL OR callback_attempted_at < :before)
                 SQL,
-            ['now' => $now->toDateTimeImmutable(), 'before' => $before->toDateTimeImmutable(), 'id' => $id->value],
-            ['now' => Types::DATETIME_IMMUTABLE, 'before' => Types::DATETIME_IMMUTABLE, 'id' => ParameterType::STRING],
+            [
+                'now' => $now->toDateTimeImmutable(),
+                'before' => $before->toDateTimeImmutable(),
+                'id' => $id->value,
+                'settled' => array_map(
+                    static fn (VideoTaskStatus $status): string => $status->value,
+                    VideoTaskStatus::settled(),
+                ),
+            ],
+            [
+                'now' => Types::DATETIME_IMMUTABLE,
+                'before' => Types::DATETIME_IMMUTABLE,
+                'id' => ParameterType::STRING,
+                'settled' => ArrayParameterType::STRING,
+            ],
         );
 
         $this->forgetCachedCopy($id);
