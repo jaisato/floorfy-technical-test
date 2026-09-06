@@ -5,11 +5,16 @@ declare(strict_types=1);
 namespace App\Tests\Support;
 
 use App\Task\Domain\Port\VideoComposer;
+use App\Task\Domain\ValueObject\Clip;
+use App\Task\Domain\ValueObject\RenderOptions;
 
 final class FakeVideoComposer implements VideoComposer
 {
-    /** @var list<list<string>> */
+    /** @var list<list<Clip>> */
     public array $calls = [];
+
+    /** @var list<RenderOptions> */
+    public array $options = [];
 
     private ?\Throwable $failure = null;
 
@@ -18,14 +23,27 @@ final class FakeVideoComposer implements VideoComposer
         $this->failure = $error;
     }
 
-    public function compose(array $localFiles, string $outputFile): void
+    public function compose(array $clips, string $outputFile, RenderOptions $options): void
     {
-        $this->calls[] = $localFiles;
+        $this->calls[] = $clips;
+        $this->options[] = $options;
 
         if (null !== $this->failure) {
             throw $this->failure;
         }
 
-        file_put_contents($outputFile, 'final video of '.\count($localFiles).' parts');
+        file_put_contents($outputFile, 'final video of '.\count($clips).' parts');
+    }
+
+    /**
+     * The files of the last composition, which is what most tests care about.
+     *
+     * @return list<string>
+     */
+    public function lastFiles(): array
+    {
+        $last = $this->calls[array_key_last($this->calls) ?? 0] ?? [];
+
+        return array_map(static fn (Clip $clip): string => $clip->file, $last);
     }
 }

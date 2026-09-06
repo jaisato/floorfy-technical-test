@@ -8,6 +8,7 @@ use App\Shared\Domain\ValueObject\DateTimeValue;
 use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Domain\Enum\VideoTaskStatus;
 use App\Task\Domain\Exception\InvalidTaskTransition;
+use App\Task\Domain\ValueObject\RenderOptions;
 
 final class VideoTask
 {
@@ -22,11 +23,16 @@ final class VideoTask
         private DateTimeValue $updatedAt,
         /** Where to POST the outcome, if the client asked to be told. */
         private readonly ?string $callbackUrl,
+        /**
+         * How the task is rendered. Null on rows written before options
+         * existed; the worker falls back to the deployment's defaults.
+         */
+        private readonly ?RenderOptions $renderOptions,
     ) {
     }
 
     /** @param array<string,mixed> $payload */
-    public static function create(array $payload, DateTimeValue $now, ?string $callbackUrl = null): self
+    public static function create(array $payload, DateTimeValue $now, ?string $callbackUrl = null, ?RenderOptions $renderOptions = null): self
     {
         return new self(
             UuidValue::new(),
@@ -37,6 +43,7 @@ final class VideoTask
             $now,
             $now,
             $callbackUrl,
+            $renderOptions,
         );
     }
 
@@ -50,13 +57,19 @@ final class VideoTask
         DateTimeValue $createdAt,
         DateTimeValue $updatedAt,
         ?string $callbackUrl = null,
+        ?RenderOptions $renderOptions = null,
     ): self {
-        return new self($id, $payload, $status, $finalVideoUrl, $errorMessage, $createdAt, $updatedAt, $callbackUrl);
+        return new self($id, $payload, $status, $finalVideoUrl, $errorMessage, $createdAt, $updatedAt, $callbackUrl, $renderOptions);
     }
 
     public function callbackUrl(): ?string
     {
         return $this->callbackUrl;
+    }
+
+    public function renderOptions(): ?RenderOptions
+    {
+        return $this->renderOptions;
     }
 
     public function id(): UuidValue

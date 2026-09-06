@@ -20,6 +20,8 @@ use App\Task\Domain\Port\ImageFetcher;
 use App\Task\Domain\Port\PartialVideoRepository;
 use App\Task\Domain\Port\VideoComposer;
 use App\Task\Domain\Port\VideoTaskRepository;
+use App\Task\Domain\ValueObject\Clip;
+use App\Task\Domain\ValueObject\RenderOptions;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
@@ -55,6 +57,7 @@ final readonly class ProcessVideoTaskHandler
         private ImageAnimator $animator,
         private VideoComposer $composer,
         private TaskCallbacks $callbacks,
+        private RenderOptions $defaultRenderOptions,
         #[Autowire(param: 'app.videos_dir')]
         private string $videosDir,
         #[Autowire(param: 'app.task_lease_seconds')]
@@ -120,7 +123,11 @@ final readonly class ProcessVideoTaskHandler
         $this->ensureWritable($this->videosDir);
         $this->ensureWritable($this->stagingDir());
 
-        $files = [];
+        // A task written before options existed has none; the deployment's
+        // defaults are what it was rendered with at the time.
+        $options = $task->renderOptions() ?? $this->defaultRenderOptions;
+
+        $clips = [];
         $failed = 0;
 
         foreach ($partials as $partial) {
@@ -131,12 +138,12 @@ final readonly class ProcessVideoTaskHandler
             $reused = $this->reusableFile($partial);
 
             if (null !== $reused) {
-                $files[] = $reused;
+                $clips[] = new Clip($reused, $partial->renderOptions($options)->duration);
                 continue;
             }
 
             try {
-                $files[] = $this->renderPartial($task->id(), $partial);
+                $clips[] = new Clip($this->renderPartial($task->id(), $partial, $options), $partial->renderOptions($options)->duration);
             } catch (\Throwable $e) {
                 // One bad image must not cost the whole attempt: the rest of the
                 // parts are rendered anyway, so a retry only has the failures
@@ -151,7 +158,7 @@ final readonly class ProcessVideoTaskHandler
         }
 
         $this->stopIfCanceled($task);
-        $this->composeFinal($task, $files);
+        $this->composeFinal($task, $clips, $options);
     }
 
     /**
@@ -165,14 +172,14 @@ final readonly class ProcessVideoTaskHandler
         }
     }
 
-    /** @param list<string> $files */
-    private function composeFinal(VideoTask $task, array $files): void
+    /** @param list<Clip> $clips */
+    private function composeFinal(VideoTask $task, array $clips, RenderOptions $options): void
     {
         $name = 'final_'.$task->id()->value.'.mp4';
         $staged = $this->stagingDir().'/'.$name;
 
         try {
-            $this->composer->compose($files, $staged);
+            $this->composer->compose($clips, $staged, $options);
         } catch (\Throwable $e) {
             $this->logFailure('Composition failed', $e, ['task_id' => $task->id()->value]);
 
@@ -189,14 +196,14 @@ final readonly class ProcessVideoTaskHandler
 
         $this->logger->info('Task completed', [
             'task_id' => $task->id()->value,
-            'parts' => \count($files),
+            'parts' => \count($clips),
         ]);
     }
 
     /**
      * Renders one part and returns the file the composer must read.
      */
-    private function renderPartial(UuidValue $taskId, PartialVideo $partial): string
+    private function renderPartial(UuidValue $taskId, PartialVideo $partial, RenderOptions $options): string
     {
         $this->logger->info('Processing partial', [
             'task_id' => $taskId->value,
@@ -217,7 +224,7 @@ final readonly class ProcessVideoTaskHandler
         $image = $this->images->fetch($partial->imageUrl(), $taskId->value.'/'.$partial->id()->value);
 
         try {
-            $this->animator->animate($image, $partial->transition(), $staged);
+            $this->animator->animate($image, $partial->transition(), $staged, $partial->renderOptions($options));
         } finally {
             // The source image is of no use once the clip exists, and every
             // retry downloads a fresh copy anyway.

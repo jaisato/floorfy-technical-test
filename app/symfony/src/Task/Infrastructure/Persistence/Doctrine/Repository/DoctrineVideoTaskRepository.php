@@ -9,6 +9,7 @@ use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\Enum\VideoTaskStatus;
 use App\Task\Domain\Port\VideoTaskRepository;
+use App\Task\Domain\ValueObject\RenderOptions;
 use App\Task\Infrastructure\Persistence\Doctrine\Entity\VideoTaskEntity;
 use Doctrine\DBAL\ParameterType;
 use Doctrine\DBAL\Types\Types;
@@ -29,6 +30,7 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
             $entity->id = $task->id()->value;
             $entity->payload = $task->payload();
             $entity->callbackUrl = $task->callbackUrl();
+            $entity->renderOptions = $task->renderOptions()?->toArray();
             $entity->createdAt = $task->createdAt()->toDateTimeImmutable();
             $this->em->persist($entity);
         }
@@ -190,6 +192,7 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
             DateTimeValue::fromDateTimeImmutable($e->createdAt),
             DateTimeValue::fromDateTimeImmutable($e->updatedAt),
             $e->callbackUrl,
+            null === $e->renderOptions ? null : RenderOptions::fromArray($e->renderOptions),
         );
     }
 }

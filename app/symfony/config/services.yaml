@@ -24,6 +24,12 @@ parameters:
     # permanent one.
     app.video_url_ttl_seconds: '%env(int:VIDEO_URL_TTL_SECONDS)%'
 
+    # Defaults for the render options a task does not choose.
+    app.render.duration: '%env(float:RENDER_DEFAULT_DURATION)%'
+    app.render.fps: '%env(int:RENDER_DEFAULT_FPS)%'
+    app.render.resolution: '%env(RENDER_DEFAULT_RESOLUTION)%'
+    app.render.crossfade: '%env(float:RENDER_DEFAULT_CROSSFADE)%'
+
     # Budget for the ffmpeg probe of /health/ready. A readiness answer that
     # takes longer than the prober's own timeout is worse than a failed one.
     app.health_probe_timeout: 5
@@ -68,6 +74,8 @@ services:
             - '../src/Task/Application/Query/ListVideoTasksQuery.php'
             - '../src/Task/Application/ReadModel/TaskListing.php'
             - '../src/Task/Application/ReadModel/TaskPage.php'
+            # Everything under Domain is data except the render defaults, which
+            # are registered as a service just below.
             - '../src/Task/Domain/'
             - '../src/Task/Infrastructure/Persistence/Doctrine/Entity/'
             - '../src/Task/Infrastructure/Video/FfmpegFailed.php'
@@ -91,6 +99,16 @@ services:
     App\Task\Application\Callback\CallbackDelivery: '@App\Task\Infrastructure\Callback\SignedHttpCallbackDelivery'
     App\Ui\Http\Idempotency\IdempotencyStore: '@App\Shared\Infrastructure\Persistence\Doctrine\Idempotency\DbalIdempotencyStore'
     App\Task\Infrastructure\Media\TargetPolicy: '@App\Task\Infrastructure\Media\PublicTargetPolicy'
+
+    # The deployment's render defaults, as the value object the domain uses.
+    # A task stores the options it resolved, so changing these later does not
+    # change how an existing task is retried.
+    App\Task\Domain\ValueObject\RenderOptions:
+        arguments:
+            $duration: '%app.render.duration%'
+            $fps: '%app.render.fps%'
+            $resolution: '%app.render.resolution%'
+            $crossfade: '%app.render.crossfade%'
 
     # Readiness: one check per directory the worker writes into. Both are
     # Docker volumes, and a volume whose ownership predates the image is how

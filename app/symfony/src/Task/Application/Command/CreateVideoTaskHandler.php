@@ -11,6 +11,7 @@ use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\Enum\Transition;
 use App\Task\Domain\Port\PartialVideoRepository;
 use App\Task\Domain\Port\VideoTaskRepository;
+use App\Task\Domain\ValueObject\RenderOptions;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Messenger\MessageBusInterface;
 
@@ -23,6 +24,7 @@ final readonly class CreateVideoTaskHandler
         private Clock $clock,
         private Transaction $transaction,
         private MessageBusInterface $commandBus,
+        private RenderOptions $defaultRenderOptions,
     ) {
     }
 
@@ -33,8 +35,13 @@ final readonly class CreateVideoTaskHandler
         // The task row and its parts are one unit: a task written without its
         // parts is a task the worker can never finish, and it used to be
         // reachable by any error in the middle of the loop.
-        $task = $this->transaction->run(function () use ($command, $now): VideoTask {
-            $task = VideoTask::create(['images' => $command->images], $now, $command->callbackUrl);
+        // The options are resolved here, once, and stored: a task rendered
+        // today and retried next month must come out the same, even if the
+        // deployment's defaults changed in between.
+        $options = $this->defaultRenderOptions->with($command->options);
+
+        $task = $this->transaction->run(function () use ($command, $now, $options): VideoTask {
+            $task = VideoTask::create(['images' => $command->images], $now, $command->callbackUrl, $options);
             $this->tasks->save($task);
 
             $partials = [];
@@ -45,6 +52,7 @@ final readonly class CreateVideoTaskHandler
                     Transition::from($image['transition']),
                     $position,
                     $now,
+                    $image['duration'] ?? null,
                 );
             }
 

@@ -14,6 +14,7 @@ use App\Task\Domain\Enum\PartialVideoStatus;
 use App\Task\Domain\Enum\Transition;
 use App\Task\Domain\Enum\VideoTaskStatus;
 use App\Task\Domain\Exception\TaskProcessingFailed;
+use App\Task\Domain\ValueObject\RenderOptions;
 use App\Task\Infrastructure\Media\BlockedUrl;
 use App\Tests\Support\FakeImageAnimator;
 use App\Tests\Support\FakeImageFetcher;
@@ -90,7 +91,8 @@ final class ProcessVideoTaskHandlerTest extends TestCase
             $this->partials->listByTaskId($task->id()),
         );
 
-        self::assertSame([$expected], $this->composer->calls);
+        self::assertSame($expected, $this->composer->lastFiles());
+        self::assertCount(1, $this->composer->calls);
     }
 
     /**
@@ -480,6 +482,12 @@ final class ProcessVideoTaskHandlerTest extends TestCase
         return $this->handlerWritingTo($this->dir->file('videos'));
     }
 
+    /** What the deployment renders with when a task chose nothing. */
+    private static function defaults(): RenderOptions
+    {
+        return new RenderOptions(3.0, 30, '1280x720', 0.0);
+    }
+
     private function handlerWritingTo(string $videosDir): ProcessVideoTaskHandler
     {
         return new ProcessVideoTaskHandler(
@@ -490,6 +498,7 @@ final class ProcessVideoTaskHandlerTest extends TestCase
             $this->animator,
             $this->composer,
             new TaskCallbacks($this->bus),
+            self::defaults(),
             $videosDir,
             self::LEASE_SECONDS,
             new NullLogger(),

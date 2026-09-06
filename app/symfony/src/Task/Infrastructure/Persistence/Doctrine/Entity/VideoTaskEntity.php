@@ -38,6 +38,15 @@ class VideoTaskEntity
     #[ORM\Column(name: 'callback_url', type: Types::STRING, length: 2048, nullable: true)]
     public ?string $callbackUrl = null;
 
+    /**
+     * How this task is rendered: duration, fps, resolution and crossfade.
+     * Null on rows written before the options existed.
+     *
+     * @var array<string, mixed>|null
+     */
+    #[ORM\Column(name: 'render_options', type: Types::JSON, nullable: true)]
+    public ?array $renderOptions = null;
+
     #[ORM\Column(name: 'created_at', type: Types::DATETIME_IMMUTABLE)]
     public \DateTimeImmutable $createdAt;
 

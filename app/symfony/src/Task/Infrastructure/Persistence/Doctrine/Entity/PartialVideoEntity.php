@@ -39,6 +39,10 @@ class PartialVideoEntity
     #[ORM\Column(type: Types::INTEGER)]
     public int $position = 0;
 
+    /** Seconds this clip lasts; null means whatever the task says. */
+    #[ORM\Column(name: 'duration_seconds', type: Types::FLOAT, nullable: true)]
+    public ?float $durationSeconds = null;
+
     #[ORM\Column(type: Types::STRING, length: 32)]
     public string $status;
 

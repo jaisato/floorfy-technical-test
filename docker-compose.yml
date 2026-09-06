@@ -38,6 +38,11 @@ x-app-environment: &app-environment
   VIDEOS_X_ACCEL_PREFIX: /protected-videos
   # Tasks one caller may create per minute; 0 turns the limit off.
   RATE_LIMIT_TASK_CREATION: ${RATE_LIMIT_TASK_CREATION:-0}
+  # Render defaults for a task that does not choose its own.
+  RENDER_DEFAULT_DURATION: ${RENDER_DEFAULT_DURATION:-3}
+  RENDER_DEFAULT_FPS: ${RENDER_DEFAULT_FPS:-30}
+  RENDER_DEFAULT_RESOLUTION: ${RENDER_DEFAULT_RESOLUTION:-1280x720}
+  RENDER_DEFAULT_CROSSFADE: ${RENDER_DEFAULT_CROSSFADE:-0}
 
 services:
   nginx:

@@ -26,6 +26,26 @@ final class Argv
         return $command[$index + 1];
     }
 
+    /**
+     * Every value that follows a repeated flag, e.g. the inputs of "-i".
+     *
+     * @param list<string> $command
+     *
+     * @return list<string>
+     */
+    public static function all(array $command, string $flag): array
+    {
+        $values = [];
+
+        foreach ($command as $index => $argument) {
+            if ($argument === $flag && \array_key_exists($index + 1, $command)) {
+                $values[] = $command[$index + 1];
+            }
+        }
+
+        return $values;
+    }
+
     /** @param list<string> $command */
     public static function output(array $command): string
     {

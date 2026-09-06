@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Ui\Http\Request;
 
 use App\Task\Domain\Enum\Transition;
+use App\Task\Domain\ValueObject\RenderOptions;
 use App\Ui\Http\Validation\PublicHttpUrl;
 use Symfony\Component\Validator\Constraints as Assert;
 
@@ -55,6 +56,13 @@ final class CreateTaskRequest
                         new Assert\Type('string'),
                         new Assert\Choice(callback: [self::class, 'transitions']),
                     ],
+                    // The one option that may differ per image: frame rate and
+                    // size have to match across the parts for them to be
+                    // concatenated at all.
+                    'duration' => new Assert\Optional([
+                        new Assert\Type('numeric'),
+                        new Assert\Range(min: RenderOptions::MIN_DURATION, max: RenderOptions::MAX_DURATION),
+                    ]),
                 ],
                 allowMissingFields: false,
                 allowExtraFields: false,
@@ -76,6 +84,34 @@ final class CreateTaskRequest
         #[Assert\Url(requireTld: false, message: 'El campo "callback_url" debe ser una URL http o https.')]
         #[PublicHttpUrl]
         public mixed $callbackUrl = null,
+        /**
+         * Optional render options for the whole task. Anything left out keeps
+         * the deployment's default.
+         */
+        #[Assert\Type(type: 'array', message: 'El campo "options" debe ser un objeto.')]
+        #[Assert\Collection(
+            fields: [
+                'duration' => new Assert\Optional([
+                    new Assert\Type('numeric'),
+                    new Assert\Range(min: RenderOptions::MIN_DURATION, max: RenderOptions::MAX_DURATION),
+                ]),
+                'fps' => new Assert\Optional([
+                    new Assert\Type('integer'),
+                    new Assert\Choice(choices: RenderOptions::FRAME_RATES),
+                ]),
+                'resolution' => new Assert\Optional([
+                    new Assert\Type('string'),
+                    new Assert\Choice(choices: RenderOptions::RESOLUTIONS),
+                ]),
+                'crossfade' => new Assert\Optional([
+                    new Assert\Type('numeric'),
+                    new Assert\Range(min: 0, max: RenderOptions::MAX_CROSSFADE),
+                ]),
+            ],
+            allowMissingFields: true,
+            allowExtraFields: false,
+        )]
+        public mixed $options = null,
     ) {
     }
 
@@ -87,13 +123,38 @@ final class CreateTaskRequest
 
         // An explicit null is the same as leaving it out; an empty string is
         // not a URL and is left for the constraints to refuse.
-        return new self($payload['images'] ?? null, $payload['callback_url'] ?? null);
+        // An absent "options" is not the same as an empty one only in that it
+        // skips the collection constraint; both end up as the defaults.
+        return new self($payload['images'] ?? null, $payload['callback_url'] ?? null, $payload['options'] ?? null);
     }
 
     /** Only safe to call once the validator has accepted this object. */
     public function callbackUrl(): ?string
     {
         return \is_string($this->callbackUrl) ? $this->callbackUrl : null;
+    }
+
+    /**
+     * The validated task-wide options, as a map the domain merges over its
+     * defaults. Only safe to call once the validator has accepted this object.
+     *
+     * @return array<string, mixed>
+     */
+    public function optionOverrides(): array
+    {
+        if (!\is_array($this->options)) {
+            return [];
+        }
+
+        $overrides = [];
+
+        foreach (['duration', 'fps', 'resolution', 'crossfade'] as $name) {
+            if (\array_key_exists($name, $this->options)) {
+                $overrides[$name] = self::normalise($name, $this->options[$name]);
+            }
+        }
+
+        return $overrides;
     }
 
     /** @return list<string> */
@@ -107,7 +168,7 @@ final class CreateTaskRequest
      *
      * Only safe to call once the validator has accepted this object.
      *
-     * @return list<array{url: string, transition: string}>
+     * @return list<array{url: string, transition: string, duration?: float}>
      */
     public function toImageList(): array
     {
@@ -117,21 +178,41 @@ final class CreateTaskRequest
 
         $images = [];
 
-        foreach ($this->images as $image) {
-            if (!\is_array($image)) {
+        foreach ($this->images as $specification) {
+            if (!\is_array($specification)) {
                 continue;
             }
 
-            $url = $image['url'] ?? null;
-            $transition = $image['transition'] ?? null;
+            $url = $specification['url'] ?? null;
+            $transition = $specification['transition'] ?? null;
 
             if (!\is_string($url) || !\is_string($transition)) {
                 continue;
             }
 
-            $images[] = ['url' => $url, 'transition' => $transition];
+            $image = ['url' => $url, 'transition' => $transition];
+            $duration = $specification['duration'] ?? null;
+
+            if (\is_int($duration) || \is_float($duration)) {
+                $image['duration'] = (float) $duration;
+            }
+
+            $images[] = $image;
         }
 
         return $images;
+    }
+
+    /**
+     * Seconds arrive as either JSON type; "fps" is a count and stays an int.
+     * The constraints have already refused anything else.
+     */
+    private static function normalise(string $name, mixed $value): mixed
+    {
+        if ('fps' === $name || !\is_int($value) && !\is_float($value)) {
+            return $value;
+        }
+
+        return (float) $value;
     }
 }

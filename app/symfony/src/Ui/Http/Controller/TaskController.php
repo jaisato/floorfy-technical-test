@@ -109,7 +109,7 @@ final readonly class TaskController
         // The command carries what was validated, not the body that arrived:
         // persisting the raw payload stored unvalidated extra fields and left
         // the stored images out of step with the ones actually queued.
-        $envelope = $this->commandBus->dispatch(new CreateVideoTaskCommand($dto->toImageList(), $dto->callbackUrl()));
+        $envelope = $this->commandBus->dispatch(new CreateVideoTaskCommand($dto->toImageList(), $dto->callbackUrl(), $dto->optionOverrides()));
         $taskId = $envelope->last(HandledStamp::class)?->getResult();
 
         if (!\is_string($taskId)) {

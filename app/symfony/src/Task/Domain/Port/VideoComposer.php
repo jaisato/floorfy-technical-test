@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace App\Task\Domain\Port;
 
+use App\Task\Domain\ValueObject\Clip;
+use App\Task\Domain\ValueObject\RenderOptions;
+
 interface VideoComposer
 {
     /**
@@ -13,9 +16,9 @@ interface VideoComposer
      * fetched them, which put a second, unguarded outbound-request path in a
      * component that never needs one; parts are always files on this disk.
      *
-     * @param list<string> $localFiles absolute paths, in playback order
+     * @param list<Clip> $clips in playback order, with their lengths
      *
      * @throws \RuntimeException when the parts cannot be concatenated
      */
-    public function compose(array $localFiles, string $outputFile): void;
+    public function compose(array $clips, string $outputFile, RenderOptions $options): void;
 }
