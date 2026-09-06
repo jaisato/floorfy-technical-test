@@ -7,6 +7,7 @@ namespace App\Task\Domain\Port;
 use App\Shared\Domain\ValueObject\DateTimeValue;
 use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Domain\Entity\VideoTask;
+use App\Task\Domain\Enum\VideoTaskStatus;
 
 interface VideoTaskRepository
 {
@@ -38,4 +39,28 @@ interface VideoTaskRepository
      * @return bool true when a claim was actually released
      */
     public function release(UuidValue $id, DateTimeValue $now): bool;
+
+    /**
+     * Writes the cancellation, but only over a task that is still pending or
+     * processing.
+     *
+     * The domain object decides whether a cancellation is allowed; this is the
+     * database arbitrating against a worker finishing the very same task at the
+     * same moment. Read-then-save would let "completed", written a millisecond
+     * earlier, be overwritten with "canceled" - a video that exists, reported
+     * as abandoned.
+     *
+     * @return bool false when the row was no longer pending or processing
+     */
+    public function cancel(UuidValue $id, DateTimeValue $now): bool;
+
+    /**
+     * The status the row has right now, read from the database rather than
+     * from anything already loaded.
+     *
+     * The worker holds a task for minutes and asks this between parts: a copy
+     * loaded when the attempt started cannot show a cancellation that arrived
+     * since.
+     */
+    public function currentStatus(UuidValue $id): ?VideoTaskStatus;
 }

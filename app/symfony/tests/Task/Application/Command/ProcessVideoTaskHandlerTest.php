@@ -353,6 +353,62 @@ final class ProcessVideoTaskHandlerTest extends TestCase
         self::assertSame(VideoTaskStatus::PENDING, $task->status());
     }
 
+    /**
+     * A cancellation lands while a part is being rendered. The worker notices
+     * at the next boundary and stops: nothing more is fetched, no final video is
+     * made, the message is acknowledged rather than retried, and the task stays
+     * canceled - the cancellation is not undone by a "release".
+     */
+    public function testACancellationIsNoticedAtTheNextPartBoundary(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png', 'https://example.com/b.png', 'https://example.com/c.png']);
+        $this->images->onFetch(function (string $url) use ($task): void {
+            if ('https://example.com/a.png' === $url) {
+                $this->tasks->cancel($task->id(), $this->clock->now());
+            }
+        });
+
+        $this->handle($task);
+
+        self::assertSame(['https://example.com/a.png'], $this->images->fetched);
+        self::assertSame([], $this->composer->calls);
+        self::assertSame(VideoTaskStatus::CANCELED, $task->status());
+        self::assertNull($task->finalVideoUrl());
+
+        // The part that was in flight finished and is kept for a later retry.
+        $statuses = array_map(
+            static fn (PartialVideo $p): string => $p->status()->value,
+            $this->partials->listByTaskId($task->id()),
+        );
+        self::assertSame(['completed', 'pending', 'pending'], $statuses);
+    }
+
+    /** The composition is a boundary too: a task canceled after its last part is not finished. */
+    public function testACancellationAfterTheLastPartStopsBeforeComposing(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+        $this->images->onFetch(function () use ($task): void {
+            $this->tasks->cancel($task->id(), $this->clock->now());
+        });
+
+        $this->handle($task);
+
+        self::assertSame([], $this->composer->calls);
+        self::assertSame(VideoTaskStatus::CANCELED, $task->status());
+        self::assertFileDoesNotExist($this->dir->file('videos/final_'.$task->id()->value.'.mp4'));
+    }
+
+    public function testACanceledTaskIsNotClaimedByALateDelivery(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+        $task->cancel($this->clock->now());
+
+        $this->handle($task);
+
+        self::assertSame([], $this->images->fetched);
+        self::assertSame(VideoTaskStatus::CANCELED, $task->status());
+    }
+
     /** @param list<string> $imageUrls */
     private function storedTask(array $imageUrls): VideoTask
     {

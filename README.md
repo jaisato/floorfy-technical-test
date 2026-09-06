@@ -109,6 +109,8 @@ POST /api/tasks
 GET /api/tasks               listado paginado con filtros
 GET /api/tasks/{id}          estado y progreso de la tarea y de cada parte
 GET /api/tasks/{id}/final    URL del vídeo final
+DELETE /api/tasks/{id}       cancela una tarea pendiente o en curso
+POST /api/tasks/{id}/retry   reencola una tarea fallida o cancelada
 ```
 
 Puntos que merece la pena conocer:
@@ -125,6 +127,11 @@ Puntos que merece la pena conocer:
   tomarla (por si el proceso murió a mitad).
 - **Fallo parcial.** Si una imagen falla, el resto de partes se generan igual; el
   reintento sólo repite lo que quedó pendiente.
+- **Cancelación.** `DELETE /api/tasks/{id}` escribe `canceled` con un UPDATE
+  condicional (sólo sobre `pending` o `processing`, para no pisar a un worker que
+  termina en ese mismo instante). El worker relee el estado entre parte y parte y
+  se detiene al verlo: acusa el mensaje, no reintenta, y conserva los clips ya
+  generados para un posible `retry`.
 - **Escritura atómica.** Los vídeos se escriben en `public/videos/.staging/` y se
   mueven con `rename()`, así que un cliente nunca recibe un fichero a medias
   (nginx además deniega cualquier ruta con punto inicial).
@@ -165,7 +172,7 @@ GET /api/tasks?status=failed&createdFrom=2026-01-01&createdTo=2026-01-31T23:59:5
 
 | Parámetro | Valor |
 |---|---|
-| `status` | `pending`, `processing`, `completed` o `failed` |
+| `status` | `pending`, `processing`, `completed`, `failed` o `canceled` |
 | `createdFrom`, `createdTo` | fecha ISO 8601 (una fecha sola es el inicio de ese día, en UTC); ambos límites inclusivos |
 | `page` | número de página, desde 1 |
 | `limit` | tamaño de página (20 por defecto, máximo 100; un valor mayor se recorta a 100) |
@@ -207,7 +214,7 @@ que no son enteros positivos, rango invertido) es un **400** con `violations`.
 }
 ```
 
-Estados — tarea: `pending | processing | completed | failed`; parte:
+Estados — tarea: `pending | processing | completed | failed | canceled`; parte:
 `pending | completed | failed`.
 
 `progress` cuenta las partes: `percent` es la proporción de partes completadas,
@@ -221,6 +228,20 @@ Las fechas van siempre en UTC (ISO 8601).
 ```
 
 **404** en ambos `GET` si la tarea no existe (o si el id no es un UUID).
+
+### `DELETE /api/tasks/{id}`
+
+Cancela una tarea `pending` o `processing`. Responde **200** con la misma
+representación que `GET /api/tasks/{id}` (ya con `status: canceled`). Una tarea
+`completed`, `failed` o `canceled` no se puede cancelar: **409** con el detalle
+de la transición rechazada. **404** si no existe.
+
+### `POST /api/tasks/{id}/retry`
+
+Reencola una tarea `failed` o `canceled`: las partes completadas se conservan
+(vídeo incluido), las fallidas vuelven a `pending`, `error` se limpia y se
+publica un nuevo mensaje para el worker. Responde **202** con la tarea; **409**
+para cualquier otro estado; **404** si no existe.
 
 ### Errores
 

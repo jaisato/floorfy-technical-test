@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace App\Tests\Ui\Http\EventListener;
 
+use App\Task\Domain\Enum\VideoTaskStatus;
+use App\Task\Domain\Exception\InvalidTaskTransition;
+use App\Task\Domain\Exception\TaskNotFound;
 use App\Tests\Support\RecordingLogger;
 use App\Ui\Http\EventListener\ApiProblemListener;
 use App\Ui\Http\Response\ApiProblem;
@@ -15,6 +18,8 @@ use Symfony\Component\HttpKernel\Exception\MethodNotAllowedHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
 use Symfony\Component\HttpKernel\KernelInterface;
+use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\Exception\HandlerFailedException;
 
 final class ApiProblemListenerTest extends TestCase
 {
@@ -78,6 +83,47 @@ final class ApiProblemListenerTest extends TestCase
         $this->handle('/api/tasks/nope', new NotFoundHttpException());
 
         self::assertSame([], $this->logger->records);
+    }
+
+    /**
+     * A command handler's refusal reaches the listener wrapped by the bus. The
+     * message of a refused transition is written for the caller and is served;
+     * a missing task is a plain 404.
+     */
+    public function testARefusedTransitionFromAHandlerIsAConflictWithItsReason(): void
+    {
+        $cause = InvalidTaskTransition::between(VideoTaskStatus::COMPLETED, VideoTaskStatus::CANCELED);
+        $event = $this->handle('/api/tasks/x', new HandlerFailedException(new Envelope(new \stdClass()), [$cause]));
+
+        $response = $event->getResponse();
+
+        self::assertNotNull($response);
+        self::assertSame(Response::HTTP_CONFLICT, $response->getStatusCode());
+        self::assertSame($cause->getMessage(), $this->body($response)['detail']);
+        self::assertSame([], $this->logger->records);
+    }
+
+    public function testATaskNotFoundFromAHandlerIsANotFound(): void
+    {
+        $event = $this->handle('/api/tasks/x', new HandlerFailedException(new Envelope(new \stdClass()), [TaskNotFound::withId('x')]));
+
+        $response = $event->getResponse();
+
+        self::assertNotNull($response);
+        self::assertSame(Response::HTTP_NOT_FOUND, $response->getStatusCode());
+    }
+
+    /** A wrapped surprise is still a surprise: generic to the client, detailed in the log. */
+    public function testAnUnexpectedWrappedExceptionIsStillAGenericFailure(): void
+    {
+        $event = $this->handle('/api/tasks', new HandlerFailedException(new Envelope(new \stdClass()), [new \RuntimeException('connection to 10.0.0.5 refused')]));
+
+        $response = $event->getResponse();
+
+        self::assertNotNull($response);
+        self::assertSame(Response::HTTP_INTERNAL_SERVER_ERROR, $response->getStatusCode());
+        self::assertStringNotContainsString('10.0.0.5', (string) $response->getContent());
+        self::assertStringContainsString('10.0.0.5', $this->logger->everythingLogged());
     }
 
     /** Only the API answers problem+json; anything else keeps its own handling. */

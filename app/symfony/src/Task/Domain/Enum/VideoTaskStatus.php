@@ -10,4 +10,5 @@ enum VideoTaskStatus: string
     case PROCESSING = 'processing';
     case COMPLETED = 'completed';
     case FAILED = 'failed';
+    case CANCELED = 'canceled';
 }

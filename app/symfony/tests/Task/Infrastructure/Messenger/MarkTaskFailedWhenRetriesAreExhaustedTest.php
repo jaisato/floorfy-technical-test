@@ -101,6 +101,22 @@ final class MarkTaskFailedWhenRetriesAreExhaustedTest extends TestCase
         self::assertNull($task->errorMessage());
     }
 
+    /**
+     * The attempt that was stopped by a cancellation may still exhaust its
+     * retries on the transport; that is not a failure of the task.
+     */
+    public function testACanceledTaskIsNotOverwritten(): void
+    {
+        $task = $this->pendingTask();
+        $task->cancel($this->clock->now());
+
+        $this->listener()($this->failure($task->id()->value, new \RuntimeException('boom')));
+
+        self::assertSame(VideoTaskStatus::CANCELED, $task->status());
+        self::assertNull($task->errorMessage());
+        self::assertSame(0, $this->tasks->saves);
+    }
+
     public function testAFailureForAnUnknownTaskIsIgnored(): void
     {
         $this->listener()($this->failure('0195c6a0-1c37-7000-8000-0000000000ff', new \RuntimeException('boom')));

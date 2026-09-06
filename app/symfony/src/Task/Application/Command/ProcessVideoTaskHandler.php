@@ -10,6 +10,8 @@ use App\Shared\Domain\Exception\HasOperatorDetail;
 use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Entity\VideoTask;
+use App\Task\Domain\Enum\VideoTaskStatus;
+use App\Task\Domain\Exception\TaskCanceled;
 use App\Task\Domain\Exception\TaskProcessingFailed;
 use App\Task\Domain\Port\ImageAnimator;
 use App\Task\Domain\Port\ImageFetcher;
@@ -36,6 +38,9 @@ use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
  *   on WorkerMessageFailedEvent.
  * - A message that can never succeed (an id that is not a UUID, a task with no
  *   images) is refused outright rather than retried twenty times.
+ * - A cancellation that arrives mid-run is noticed at the next part boundary:
+ *   the attempt stops, the message is acknowledged, and what was rendered so
+ *   far stays on disk for a later retry to reuse.
  */
 #[AsMessageHandler(bus: 'messenger.bus.command')]
 final readonly class ProcessVideoTaskHandler
@@ -86,6 +91,11 @@ final readonly class ProcessVideoTaskHandler
 
         try {
             $this->process($task);
+        } catch (TaskCanceled) {
+            // Not a failure, so nothing is rethrown and nothing is retried; the
+            // cancellation already replaced the claim, so there is none to hand
+            // back either.
+            $this->logger->info('Task canceled while processing, attempt stopped', ['task_id' => $taskId->value]);
         } catch (\Throwable $e) {
             // Hand the claim back so the next delivery can take it. Without
             // this the task stays "processing" and every retry is refused by
@@ -113,6 +123,10 @@ final readonly class ProcessVideoTaskHandler
         $failed = 0;
 
         foreach ($partials as $partial) {
+            // Between parts, not during one: a running ffmpeg is left to finish
+            // its clip, which a retry then reuses.
+            $this->stopIfCanceled($task);
+
             $reused = $this->reusableFile($partial);
 
             if (null !== $reused) {
@@ -135,7 +149,19 @@ final readonly class ProcessVideoTaskHandler
             throw TaskProcessingFailed::partialsFailed($failed, \count($partials));
         }
 
+        $this->stopIfCanceled($task);
         $this->composeFinal($task, $files);
+    }
+
+    /**
+     * Reads the status the row has now: the copy in hand is from the start of
+     * the attempt, and a cancellation is written by another process.
+     */
+    private function stopIfCanceled(VideoTask $task): void
+    {
+        if (VideoTaskStatus::CANCELED === $this->tasks->currentStatus($task->id())) {
+            throw TaskCanceled::noticed($task->id()->value);
+        }
     }
 
     /** @param list<string> $files */

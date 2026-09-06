@@ -9,6 +9,7 @@ use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\Enum\VideoTaskStatus;
 use App\Task\Domain\Exception\InvalidTaskTransition;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class VideoTaskTest extends TestCase
@@ -149,6 +150,127 @@ final class VideoTaskTest extends TestCase
         $task->markFailed('retries exhausted', $this->at(self::LATER));
 
         self::assertSame(VideoTaskStatus::FAILED, $task->status());
+    }
+
+    public function testAPendingTaskCanBeCanceled(): void
+    {
+        $task = $this->pendingTask();
+        $task->cancel($this->at(self::LATER));
+
+        self::assertSame(VideoTaskStatus::CANCELED, $task->status());
+        self::assertTrue($task->isCanceled());
+        self::assertTrue($task->isSettled());
+        self::assertSame(self::LATER, $task->updatedAt()->toIso8601());
+    }
+
+    public function testAProcessingTaskCanBeCanceled(): void
+    {
+        $task = $this->pendingTask();
+        $task->markProcessing($this->at(self::CREATED));
+        $task->cancel($this->at(self::LATER));
+
+        self::assertSame(VideoTaskStatus::CANCELED, $task->status());
+    }
+
+    /** @return iterable<string, array{callable(VideoTask): void}> */
+    public static function settledTasks(): iterable
+    {
+        $created = DateTimeValue::fromString(self::CREATED);
+
+        yield 'completed' => [static function (VideoTask $task) use ($created): void {
+            $task->markProcessing($created);
+            $task->markCompleted('http://localhost/videos/final.mp4', $created);
+        }];
+        yield 'failed' => [static function (VideoTask $task) use ($created): void {
+            $task->markFailed('boom', $created);
+        }];
+        yield 'canceled' => [static function (VideoTask $task) use ($created): void {
+            $task->cancel($created);
+        }];
+    }
+
+    /** @param callable(VideoTask): void $settle */
+    #[DataProvider('settledTasks')]
+    public function testASettledTaskCannotBeCanceled(callable $settle): void
+    {
+        $task = $this->pendingTask();
+        $settle($task);
+
+        $this->expectException(InvalidTaskTransition::class);
+
+        $task->cancel($this->at(self::LATER));
+    }
+
+    /** A redelivered message must not resurrect a task somebody stopped. */
+    public function testACanceledTaskCannotBeClaimed(): void
+    {
+        $task = $this->pendingTask();
+        $task->cancel($this->at(self::CREATED));
+
+        $this->expectException(InvalidTaskTransition::class);
+        $this->expectExceptionMessageMatches('/"canceled" -> "processing"/');
+
+        $task->markProcessing($this->at(self::LATER));
+    }
+
+    /** Exhausted retries of the attempt that was stopped are not a failure of the task. */
+    public function testACanceledTaskCannotBeFailed(): void
+    {
+        $task = $this->pendingTask();
+        $task->cancel($this->at(self::CREATED));
+
+        $this->expectException(InvalidTaskTransition::class);
+
+        $task->markFailed('too late', $this->at(self::LATER));
+    }
+
+    public function testAFailedTaskCanBeRetriedAndForgetsItsReason(): void
+    {
+        $task = $this->pendingTask();
+        $task->markFailed('la descarga falló', $this->at(self::CREATED));
+        $task->retry($this->at(self::LATER));
+
+        self::assertSame(VideoTaskStatus::PENDING, $task->status());
+        self::assertNull($task->errorMessage());
+        self::assertFalse($task->isSettled());
+        self::assertSame(self::LATER, $task->updatedAt()->toIso8601());
+    }
+
+    public function testACanceledTaskCanBeRetried(): void
+    {
+        $task = $this->pendingTask();
+        $task->cancel($this->at(self::CREATED));
+        $task->retry($this->at(self::LATER));
+
+        self::assertSame(VideoTaskStatus::PENDING, $task->status());
+    }
+
+    /** @return iterable<string, array{callable(VideoTask): void, string}> */
+    public static function tasksThatCannotBeRetried(): iterable
+    {
+        $created = DateTimeValue::fromString(self::CREATED);
+
+        yield 'pending' => [static function (VideoTask $task): void {}, '"pending" -> "pending"'];
+        yield 'processing' => [static function (VideoTask $task) use ($created): void {
+            $task->markProcessing($created);
+        }, '"processing" -> "pending"'];
+        yield 'completed' => [static function (VideoTask $task) use ($created): void {
+            $task->markProcessing($created);
+            $task->markCompleted('http://localhost/videos/final.mp4', $created);
+        }, '"completed" -> "pending"'];
+    }
+
+    /** @param callable(VideoTask): void $arrange */
+    #[DataProvider('tasksThatCannotBeRetried')]
+    public function testOnlyAFailedOrCanceledTaskCanBeRetried(callable $arrange, string $transition): void
+    {
+        $task = $this->pendingTask();
+        $arrange($task);
+
+        $this->expectException(InvalidTaskTransition::class);
+        $this->expectExceptionMessageMatches('/'.preg_quote($transition, '/').'/');
+
+        $task->retry($this->at(self::LATER));
     }
 
     public function testRehydrationRestoresEveryField(): void

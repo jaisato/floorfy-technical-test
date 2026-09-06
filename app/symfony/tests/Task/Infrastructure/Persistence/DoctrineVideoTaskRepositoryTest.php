@@ -167,6 +167,61 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
         self::assertFalse($this->repository->release($task->id(), $this->now));
     }
 
+    public function testCancelingWritesTheStatusOverAPendingOrProcessingTask(): void
+    {
+        $pending = $this->storedTask();
+        $processing = $this->storedTask();
+        $this->repository->claimForProcessing($processing->id(), $this->now, $this->staleBefore());
+
+        self::assertTrue($this->repository->cancel($pending->id(), $this->now));
+        self::assertTrue($this->repository->cancel($processing->id(), $this->now));
+        $this->entityManager->clear();
+
+        self::assertSame(VideoTaskStatus::CANCELED, $this->repository->get($pending->id())?->status());
+        self::assertSame(VideoTaskStatus::CANCELED, $this->repository->get($processing->id())?->status());
+    }
+
+    /**
+     * The database arbitrates: a task that completed a moment ago is not
+     * overwritten, whatever the caller read before.
+     */
+    public function testCancelingASettledTaskChangesNothing(): void
+    {
+        $task = $this->storedTask();
+        $task->markProcessing($this->now);
+        $task->markCompleted('http://localhost/videos/final.mp4', $this->now);
+        $this->repository->save($task);
+
+        self::assertFalse($this->repository->cancel($task->id(), $this->now));
+        self::assertFalse($this->repository->cancel(UuidValue::new(), $this->now));
+
+        $canceled = $this->storedTask();
+        self::assertTrue($this->repository->cancel($canceled->id(), $this->now));
+        self::assertFalse($this->repository->cancel($canceled->id(), $this->now), 'a second cancellation finds nothing to cancel');
+    }
+
+    public function testACanceledTaskCannotBeClaimed(): void
+    {
+        $task = $this->storedTask();
+        $this->repository->cancel($task->id(), $this->now);
+
+        self::assertFalse($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
+    }
+
+    /**
+     * The worker asks between parts whether it should go on; a copy loaded at
+     * the start of the attempt would still say "processing".
+     */
+    public function testTheCurrentStatusIsReadFromTheRowNotFromTheLoadedCopy(): void
+    {
+        $task = $this->storedTask();
+        $this->repository->get($task->id());
+        $this->connection()->executeStatement('UPDATE video_tasks SET status = ? WHERE id = ?', ['canceled', $task->id()->value]);
+
+        self::assertSame(VideoTaskStatus::CANCELED, $this->repository->currentStatus($task->id()));
+        self::assertNull($this->repository->currentStatus(UuidValue::new()));
+    }
+
     /**
      * The enum is stored as its own value; a row written with anything else is a
      * corrupted row and has to say so rather than being read as some default.
