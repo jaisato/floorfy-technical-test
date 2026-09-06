@@ -151,6 +151,34 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         self::assertStringContainsString('Callback delivery failed', $this->logger->everythingLogged());
     }
 
+    /**
+     * Refusing the message is only half of it. The row is left exactly as the
+     * recovery sweep recognises one whose publish was lost - settled, a
+     * callback asked for, none delivered - so without a record of the verdict
+     * the sweep published this same doomed notification a cutoff later, and
+     * again, for the life of the task. An unset signing secret signs nothing on
+     * the next attempt either.
+     */
+    public function testAPermanentFailureIsRecordedSoTheRecoverySweepStopsOfferingIt(): void
+    {
+        $task = $this->settledTaskWithCallback();
+        $this->delivery->failWith(CallbackDeliveryFailed::unsigned());
+
+        try {
+            $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+            self::fail('a deployment that cannot sign must be reported');
+        } catch (UnrecoverableMessageHandlingException) {
+            // expected
+        }
+
+        self::assertArrayHasKey($task->id()->value, $this->tasks->callbacksAbandoned);
+        self::assertArrayNotHasKey(
+            $task->id()->value,
+            $this->tasks->callbacksNotified,
+            'given up on is not delivered',
+        );
+    }
+
     /** A 503 from the receiver propagates as is, so the transport retries it. */
     public function testATransientDeliveryFailureIsRethrownForTheTransportToRetry(): void
     {
@@ -160,6 +188,50 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         $this->expectException(CallbackDeliveryFailed::class);
 
         $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+    }
+
+    /** A delay is not an outcome: the notification is still owed and the sweep still owes it. */
+    public function testATransientFailureGivesUpOnNothing(): void
+    {
+        $task = $this->settledTaskWithCallback();
+        $this->delivery->failWith(CallbackDeliveryFailed::status('https://client.example/hook', 503));
+
+        try {
+            $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+        } catch (CallbackDeliveryFailed) {
+            // expected
+        }
+
+        self::assertSame([], $this->tasks->callbacksAbandoned);
+    }
+
+    /**
+     * The verdict belongs to the run it was reached about. A retry that landed
+     * while this delivery was being refused owes a notification of its own, and
+     * that one gets its own attempt at whatever the deployment looks like then.
+     */
+    public function testAVerdictAboutAnEarlierRunDoesNotSilenceTheCurrentOne(): void
+    {
+        $task = VideoTask::create(['images' => []], $this->now, 'https://client.example/hook');
+        $task->markFailed('boom', $this->now);
+        $this->tasks->save($task);
+        $this->delivery->failWith(CallbackDeliveryFailed::unsigned());
+
+        // Retried and finished while this notification was being refused.
+        $this->tasks->beforeMarkAbandoned = function () use ($task): void {
+            $task->retry($this->now);
+            $task->markProcessing($this->now);
+            $task->markCompleted('/videos/final.mp4', $this->now);
+        };
+
+        try {
+            $this->handler()(new NotifyTaskCallback($task->id()->value, 'failed'));
+            self::fail('a deployment that cannot sign must be reported');
+        } catch (UnrecoverableMessageHandlingException) {
+            // expected
+        }
+
+        self::assertSame([], $this->tasks->callbacksAbandoned, 'the run that is settled there is not the one refused');
     }
 
     /** Whatever the delivery does, the task itself is never touched. */
@@ -182,6 +254,16 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
     {
         $task = VideoTask::create(['images' => []], $this->now, 'https://client.example/hook');
         $this->tasks->save($task);
+
+        return $task;
+    }
+
+    /** Settled where the notification says it is, which is what the marks are fenced on. */
+    private function settledTaskWithCallback(): VideoTask
+    {
+        $task = $this->taskWithCallback();
+        $task->markProcessing($this->now);
+        $task->markCompleted('/videos/final.mp4', $this->now);
 
         return $task;
     }

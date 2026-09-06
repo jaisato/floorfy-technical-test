@@ -247,13 +247,34 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         return 1 === $affected;
     }
 
+    public function markCallbackAbandoned(UuidValue $id, string $event, DateTimeValue $settledAt, DateTimeValue $now): bool
+    {
+        // The same fence as the mark above, and for the same reason: a task
+        // that settled again while this delivery was being refused owes a
+        // fresh notification, and this verdict was reached about the previous
+        // run. Written unconditionally it would silence the sweep for a run
+        // whose own notification never went out.
+        $affected = $this->em->getConnection()->executeStatement(
+            'UPDATE video_tasks SET callback_abandoned_at = :now WHERE id = :id AND status = :event AND updated_at = :settled',
+            ['now' => $now->toDateTimeImmutable(), 'id' => $id->value, 'event' => $event, 'settled' => $settledAt->toDateTimeImmutable()],
+            ['now' => Types::DATETIME_IMMUTABLE, 'id' => ParameterType::STRING, 'event' => ParameterType::STRING, 'settled' => Types::DATETIME_IMMUTABLE],
+        );
+
+        $this->forgetCachedCopy($id);
+
+        return 1 === $affected;
+    }
+
     public function clearCallbackNotification(UuidValue $id): void
     {
         // The attempt goes with it: a run queued again owes a fresh
         // notification, and the stamp of the previous run's sweep would hold
-        // that one back for a whole cutoff.
+        // that one back for a whole cutoff. So does the verdict: the URL is
+        // checked again on the next delivery and the signing secret may have
+        // been configured since, so a new run is not refused for what the
+        // previous one ran into.
         $this->em->getConnection()->executeStatement(
-            'UPDATE video_tasks SET callback_notified_at = NULL, callback_attempted_at = NULL WHERE id = :id',
+            'UPDATE video_tasks SET callback_notified_at = NULL, callback_attempted_at = NULL, callback_abandoned_at = NULL WHERE id = :id',
             ['id' => $id->value],
             ['id' => ParameterType::STRING],
         );
@@ -304,6 +325,7 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
                    SET callback_attempted_at = :now
                  WHERE id = :id
                    AND callback_notified_at IS NULL
+                   AND callback_abandoned_at IS NULL
                    AND (callback_attempted_at IS NULL OR callback_attempted_at < :before)
                 SQL,
             ['now' => $now->toDateTimeImmutable(), 'before' => $before->toDateTimeImmutable(), 'id' => $id->value],
@@ -464,6 +486,11 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
                 ->from(VideoTaskEntity::class, 't')
                 ->where('t.callbackUrl IS NOT NULL')
                 ->andWhere('t.callbackNotifiedAt IS NULL')
+                // A notification nothing can deliver - a URL the guard refuses,
+                // a deployment with no signing secret - is not one that was
+                // lost. Offered again it is refused again, so the sweep would
+                // republish the same doomed message for the life of the task.
+                ->andWhere('t.callbackAbandonedAt IS NULL')
                 ->andWhere('t.updatedAt < :before')
                 // A notification this sweep already published is not lost yet:
                 // it waits out the same cutoff before being offered again, so a

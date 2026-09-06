@@ -102,10 +102,56 @@ final class PruneVideosTest extends TestCase
         self::assertSame(1, $report->files, 'only the file that actually went is counted');
         self::assertSame([], $report->taskIds, 'and the task is not reported as pruned');
         self::assertNull($task->prunedAt(), 'so the next run tries again');
-        self::assertNotNull($task->finalVideoUrl());
         self::assertStringContainsString('Retention could not delete every file of a task', $logger->everythingLogged());
 
         rmdir($clip);
+    }
+
+    /**
+     * The half that did go is gone, and the task went on naming it: the final
+     * video was deleted while the clip refused, and GET /api/tasks/{id} kept
+     * handing clients a link this very run had deleted - a download that 404s
+     * against an API saying the video is there. The pointer comes down; the
+     * task itself is untouched, so the next run still finds it and still has
+     * the file it could not delete to try again on.
+     */
+    public function testAPartialRunStopsAdvertisingTheFilesItDidDelete(): void
+    {
+        $task = $this->settledTask('2026-01-01T00:00:00+00:00');
+        $part = $this->partOf($task);
+        $this->videoFile('final_'.$task->id()->value.'.mp4');
+
+        $clip = $this->dir->file('videos').'/partial_'.$part->id()->value.'.mp4';
+        mkdir($clip, 0o755, true);
+
+        $updatedAt = $task->updatedAt();
+        $this->prune()->run($this->cutoff());
+
+        self::assertNull($task->finalVideoUrl(), 'the video it deleted is not offered any more');
+        self::assertNull($task->prunedAt(), 'and the task is not pruned: a file of its own is still there');
+        self::assertTrue($updatedAt->equals($task->updatedAt()), 'nor moved out of the next run listing');
+        self::assertNotNull($part->videoPath(), 'the clip that would not go still has its path');
+
+        rmdir($clip);
+    }
+
+    /** The other way round: the clip goes and the final video refuses. */
+    public function testTheClipsPathComesDownWhenItsFileWentAndTheFinalVideoDidNot(): void
+    {
+        $task = $this->settledTask('2026-01-01T00:00:00+00:00');
+        $part = $this->partOf($task);
+        $this->videoFile('partial_'.$part->id()->value.'.mp4');
+
+        $final = $this->dir->file('videos').'/final_'.$task->id()->value.'.mp4';
+        mkdir($final, 0o755, true);
+
+        $this->prune()->run($this->cutoff());
+
+        self::assertNull($part->videoPath());
+        self::assertNotNull($task->finalVideoUrl(), 'what is still on disk is still offered');
+        self::assertNull($task->prunedAt());
+
+        rmdir($final);
     }
 
     public function testTheScratchDirectoryGoesWithThem(): void

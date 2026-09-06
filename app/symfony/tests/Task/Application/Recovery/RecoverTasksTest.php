@@ -157,6 +157,30 @@ final class RecoverTasksTest extends TestCase
         self::assertSame([$task->id()->value], $this->recover()->run($this->cutoff())->renotifiedTaskIds);
     }
 
+    /**
+     * A notification nothing can deliver is not one that was lost. The sweep
+     * exists for a publish that never reached the broker; a callback URL the
+     * guard refuses is refused on every attempt, and a deployment with no
+     * signing secret signs nothing, so offering that task again only produces
+     * the same refusal and another entry in the failure transport - once per
+     * run, for the life of the task.
+     */
+    public function testACallbackGivenUpOnIsNeverOfferedAgain(): void
+    {
+        $task = $this->settledTask('2026-03-01T09:00:00+00:00', 'https://client.example/hook');
+        $this->tasks->markCallbackAbandoned($task->id(), $task->status()->value, $task->updatedAt(), DateTimeValue::fromString('2026-03-01T09:00:01+00:00'));
+
+        self::assertSame([], $this->recover()->run($this->cutoff())->renotifiedTaskIds);
+
+        // And not an hour later either, when the sweep's own attempt has aged
+        // past the window: that is what makes it forever rather than once.
+        $later = DateTimeValue::fromString('2026-03-01T11:00:00+00:00')->minusSeconds(600);
+        $recover = new RecoverTasks($this->tasks, $this->bus, new FixedClock('2026-03-01T11:00:00+00:00'), new NullLogger());
+
+        self::assertSame([], $recover->run($later)->renotifiedTaskIds);
+        self::assertSame([], $this->bus->dispatched);
+    }
+
     public function testATaskThatAskedForNoCallbackIsNeverOffered(): void
     {
         $this->settledTask('2026-03-01T09:00:00+00:00', null);

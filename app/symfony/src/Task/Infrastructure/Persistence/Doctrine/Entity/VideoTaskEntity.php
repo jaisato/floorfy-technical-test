@@ -82,6 +82,26 @@ class VideoTaskEntity
     #[ORM\Column(name: 'callback_attempted_at', type: Types::DATETIME_IMMUTABLE, nullable: true)]
     public ?\DateTimeImmutable $callbackAttemptedAt = null;
 
+    /**
+     * When this task's notification was given up on.
+     *
+     * Not every delivery failure is worth another go. A callback URL the guard
+     * refuses will be refused every time, and a deployment with no signing
+     * secret cannot sign any notification at all: the handler refuses those
+     * outright rather than spending the transport's retries on them. That left
+     * the row exactly as the sweep looks for one - settled, a callback asked
+     * for, none delivered - so it published the notification again a cutoff
+     * later, and again after that, for the life of the task. This is the
+     * difference between "still owed" and "not going to happen", and only the
+     * first is the sweep's business.
+     *
+     * Cleared when the task is queued again, like the two above: the URL is
+     * re-checked and the secret may have been configured since, so the new run
+     * gets its own attempt rather than inheriting the old one's verdict.
+     */
+    #[ORM\Column(name: 'callback_abandoned_at', type: Types::DATETIME_IMMUTABLE, nullable: true)]
+    public ?\DateTimeImmutable $callbackAbandonedAt = null;
+
     /** When the retention job deleted this task's videos, if it has. */
     #[ORM\Column(name: 'pruned_at', type: Types::DATETIME_IMMUTABLE, nullable: true)]
     public ?\DateTimeImmutable $prunedAt = null;

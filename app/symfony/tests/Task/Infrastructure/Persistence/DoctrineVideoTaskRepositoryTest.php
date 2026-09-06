@@ -299,6 +299,49 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
     }
 
     /**
+     * The listing the sweep reads, and the three states that take a task out
+     * of it. The DQL is where the clause has to be, not only the claim: the
+     * sweep lists first and claims what it listed.
+     */
+    public function testTheSweepsListingSkipsCallbacksDeliveredAndCallbacksGivenUpOn(): void
+    {
+        $owed = $this->storedTaskAwaitingCallback();
+        $delivered = $this->storedTaskAwaitingCallback();
+        $abandoned = $this->storedTaskAwaitingCallback();
+
+        $this->repository->markCallbackNotified($delivered->id(), $delivered->status()->value, $delivered->updatedAt(), $this->now);
+        $this->repository->markCallbackAbandoned($abandoned->id(), $abandoned->status()->value, $abandoned->updatedAt(), $this->now);
+        $this->entityManager->clear();
+
+        $listed = array_map(
+            static fn (VideoTask $task): string => $task->id()->value,
+            $this->repository->listAwaitingCallback($this->now->minusSeconds(-60), 10),
+        );
+
+        self::assertSame([$owed->id()->value], $listed);
+    }
+
+    /**
+     * The verdict on a notification nothing can deliver, and the same round
+     * trip: written under the run's fence, and taken back off when the task is
+     * queued again - the URL is re-checked on the next delivery and the signing
+     * secret may have been configured since.
+     */
+    public function testTheGiveUpMarkCanBeWrittenAndTakenBackOff(): void
+    {
+        $task = $this->storedTask();
+
+        self::assertTrue($this->repository->markCallbackAbandoned($task->id(), $task->status()->value, $task->updatedAt(), $this->now));
+        self::assertNotNull($this->connection()->fetchOne('SELECT callback_abandoned_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
+
+        // And while it stands, the sweep cannot take the notification.
+        self::assertFalse($this->repository->claimCallbackNotification($task->id(), $this->now, $this->now));
+
+        $this->repository->clearCallbackNotification($task->id());
+        self::assertNull($this->connection()->fetchOne('SELECT callback_abandoned_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
+    }
+
+    /**
      * Two runs of one task can end the same way, so the status does not say
      * which of them a delivery was announcing. Run A ends failed and its
      * delivery is slow; a retry runs B, which fails too; A's mark was then
@@ -408,6 +451,17 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
     private function storedTask(): VideoTask
     {
         $task = VideoTask::create(['images' => []], $this->now);
+        $this->repository->save($task);
+
+        return $task;
+    }
+
+    /** Settled, asked for a callback, never got one: what the sweep looks for. */
+    private function storedTaskAwaitingCallback(): VideoTask
+    {
+        $task = VideoTask::create(['images' => []], $this->now, 'https://client.example/hook');
+        $task->markProcessing($this->now);
+        $task->markCompleted('/videos/final.mp4', $this->now);
         $this->repository->save($task);
 
         return $task;

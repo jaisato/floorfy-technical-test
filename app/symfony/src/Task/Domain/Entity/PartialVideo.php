@@ -160,6 +160,16 @@ final class PartialVideo
     }
 
     /**
+     * Drops the pointer to a clip that is no longer on disk.
+     * See VideoTask::forgetFinalVideo() - the same partial retention run, and
+     * the same reason updatedAt does not move.
+     */
+    public function forgetVideo(): void
+    {
+        $this->videoPath = null;
+    }
+
+    /**
      * Puts a failed part back in the queue so the next attempt retries it.
      *
      * Without this a single transient download error would pin the part at
