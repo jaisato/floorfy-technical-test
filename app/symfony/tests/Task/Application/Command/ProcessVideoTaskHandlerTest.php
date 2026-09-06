@@ -22,9 +22,11 @@ use App\Tests\Support\FakeVideoComposer;
 use App\Tests\Support\FixedClock;
 use App\Tests\Support\InMemoryPartialVideoRepository;
 use App\Tests\Support\InMemoryVideoTaskRepository;
+use App\Tests\Support\RecordingLogger;
 use App\Tests\Support\RecordingMessageBus;
 use App\Tests\Support\TempDirectory;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
 
@@ -557,6 +559,33 @@ final class ProcessVideoTaskHandlerTest extends TestCase
         return $task;
     }
 
+    /**
+     * A partial renders from a URL the client gave us, and for an object store
+     * that is routinely a presigned one. Symfony's transport exceptions quote
+     * the whole request URL back, so a connection that simply timed out wrote
+     * the signature into the log line - where whoever operates the worker, and
+     * anyone reading the failure transport, can pick it up.
+     */
+    public function testTheLogOfAFailedImageDoesNotCarryItsCredentials(): void
+    {
+        $signed = 'https://bucket.s3.amazonaws.com/img/a.png?X-Amz-Signature=deadbeef';
+        $task = $this->storedTask([$signed]);
+        $this->images->failFor($signed, new \RuntimeException(\sprintf('Connection timed out for "%s".', $signed)));
+        $logger = new RecordingLogger();
+
+        try {
+            $this->handlerWritingTo($this->dir->file('videos'), $logger)(new ProcessVideoTaskCommand($task->id()->value));
+        } catch (TaskProcessingFailed) {
+            // The attempt failing is the point; what it wrote down is the test.
+        }
+
+        $logged = $logger->everythingLogged();
+        self::assertStringNotContainsString('deadbeef', $logged);
+        self::assertStringNotContainsString('X-Amz-Signature', $logged);
+        self::assertStringContainsString('https://bucket.s3.amazonaws.com/img/a.png?…', $logged, 'the object is still named');
+        self::assertStringContainsString('Connection timed out', $logged, 'and so is what went wrong');
+    }
+
     private function handle(VideoTask $task): void
     {
         $this->handler()(new ProcessVideoTaskCommand($task->id()->value));
@@ -573,7 +602,7 @@ final class ProcessVideoTaskHandlerTest extends TestCase
         return new RenderOptions(3.0, 30, '1280x720', 0.0);
     }
 
-    private function handlerWritingTo(string $videosDir): ProcessVideoTaskHandler
+    private function handlerWritingTo(string $videosDir, ?LoggerInterface $logger = null): ProcessVideoTaskHandler
     {
         return new ProcessVideoTaskHandler(
             $this->tasks,
@@ -586,7 +615,7 @@ final class ProcessVideoTaskHandlerTest extends TestCase
             self::defaults(),
             $videosDir,
             self::LEASE_SECONDS,
-            new NullLogger(),
+            $logger ?? new NullLogger(),
         );
     }
 }

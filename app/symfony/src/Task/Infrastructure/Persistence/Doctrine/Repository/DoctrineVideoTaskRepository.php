@@ -220,16 +220,26 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         return true;
     }
 
-    public function markCallbackNotified(UuidValue $id, string $event, DateTimeValue $now): bool
+    public function markCallbackNotified(UuidValue $id, string $event, DateTimeValue $settledAt, DateTimeValue $now): bool
     {
         // Conditional on the task still standing where the notification said
         // it did: a retry that landed while the delivery was in flight has
         // moved it on, and this mark would answer for a run whose own
         // notification never went out.
+        //
+        // The status alone does not say that. It is reusable: run A ends
+        // failed, its delivery is slow, a retry starts run B and it ends
+        // failed too - and A's mark was accepted for B, so when B's own
+        // notification was lost the sweep saw callback_notified_at set and
+        // never offered the task again. updated_at is what tells the two runs
+        // apart: every terminal transition writes it, and neither this mark
+        // nor the sweep's claim touches it. (DATETIME, so one second is the
+        // resolution; two runs of the same task settling inside one second is
+        // not a thing a render does.)
         $affected = $this->em->getConnection()->executeStatement(
-            'UPDATE video_tasks SET callback_notified_at = :now WHERE id = :id AND status = :event',
-            ['now' => $now->toDateTimeImmutable(), 'id' => $id->value, 'event' => $event],
-            ['now' => Types::DATETIME_IMMUTABLE, 'id' => ParameterType::STRING, 'event' => ParameterType::STRING],
+            'UPDATE video_tasks SET callback_notified_at = :now WHERE id = :id AND status = :event AND updated_at = :settled',
+            ['now' => $now->toDateTimeImmutable(), 'id' => $id->value, 'event' => $event, 'settled' => $settledAt->toDateTimeImmutable()],
+            ['now' => Types::DATETIME_IMMUTABLE, 'id' => ParameterType::STRING, 'event' => ParameterType::STRING, 'settled' => Types::DATETIME_IMMUTABLE],
         );
 
         $this->forgetCachedCopy($id);
@@ -249,6 +259,37 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         );
 
         $this->forgetCachedCopy($id);
+    }
+
+    public function claimRepublication(UuidValue $id, DateTimeValue $before, DateTimeValue $now): bool
+    {
+        // Conditional, like every other claim here: two sweeps running at once
+        // both read the task as unclaimed, and only the one whose UPDATE lands
+        // publishes. The condition repeats what the listing asked, so a task a
+        // worker picked up in between is not claimed at all.
+        $affected = $this->em->getConnection()->executeStatement(
+            <<<'SQL'
+                UPDATE video_tasks
+                   SET updated_at = :now
+                 WHERE id = :id AND status = :pending AND updated_at < :before
+                SQL,
+            [
+                'now' => $now->toDateTimeImmutable(),
+                'before' => $before->toDateTimeImmutable(),
+                'pending' => VideoTaskStatus::PENDING->value,
+                'id' => $id->value,
+            ],
+            [
+                'now' => Types::DATETIME_IMMUTABLE,
+                'before' => Types::DATETIME_IMMUTABLE,
+                'pending' => ParameterType::STRING,
+                'id' => ParameterType::STRING,
+            ],
+        );
+
+        $this->forgetCachedCopy($id);
+
+        return 1 === $affected;
     }
 
     public function claimCallbackNotification(UuidValue $id, DateTimeValue $before, DateTimeValue $now): bool

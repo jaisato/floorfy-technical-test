@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Task\Application\Callback;
 
+use App\Shared\Application\Redaction\Urls;
+
 /**
  * A notification that did not reach its endpoint.
  *
@@ -64,52 +66,11 @@ final class CallbackDeliveryFailed extends \RuntimeException
      */
     private static function explain(\Throwable $cause): string
     {
-        return \sprintf('%s (%s)', self::scrub($cause->getMessage()), get_debug_type($cause));
+        return \sprintf('%s (%s)', Urls::scrub($cause->getMessage()), get_debug_type($cause));
     }
 
-    /**
-     * Redacts every URL in a piece of text that was not written here.
-     *
-     * The trailing punctuation of the sentence around it is not part of the
-     * URL, and leaving it inside would only mean it is dropped with the query.
-     */
-    private static function scrub(string $text): string
-    {
-        return preg_replace_callback(
-            '~[a-z][a-z0-9+.\-]*://[^\s"\'<>]+~i',
-            static function (array $match): string {
-                $url = rtrim($match[0], '.,;:!?)]}');
-
-                return self::redact($url).substr($match[0], \strlen($url));
-            },
-            $text,
-        ) ?? $text;
-    }
-
-    /**
-     * The endpoint without anything that could be a credential: scheme, host,
-     * port and path, which is what identifies it in a log.
-     *
-     * The query goes whole rather than by parameter name: `?token=`, `?key=`,
-     * `?sig=` and whatever the next receiver calls it are not a list this can
-     * keep up with, and a query that is only `?taskId=` is already in the log
-     * line beside this one. A URL that will not parse is reported as such
-     * instead of echoed.
-     */
     private static function redact(string $url): string
     {
-        $parts = parse_url($url);
-
-        if (false === $parts || !isset($parts['host'])) {
-            return '(URL ilegible)';
-        }
-
-        return \sprintf(
-            '%s%s%s%s',
-            isset($parts['scheme']) ? $parts['scheme'].'://' : '',
-            $parts['host'],
-            isset($parts['port']) ? ':'.$parts['port'] : '',
-            $parts['path'] ?? '',
-        ).(isset($parts['query']) ? '?…' : '');
+        return Urls::endpoint($url);
     }
 }

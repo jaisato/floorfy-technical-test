@@ -57,6 +57,17 @@ final readonly class RecoverTasks
         $renotified = [];
 
         foreach ($this->tasks->listUnclaimedSince($before, $limit) as $task) {
+            // Claimed before publishing, exactly as the callback below is. A
+            // task waiting its turn in a busy broker is still unclaimed and
+            // still untouched, so without this every run of the documented
+            // cron published another copy of the same message and a backlog of
+            // long renders grew a queue of no-ops behind it. A dry run claims
+            // nothing: it reports what a real run would do, and must leave the
+            // sweep able to do it.
+            if (!$dryRun && !$this->tasks->claimRepublication($task->id(), $before, $this->clock->now())) {
+                continue;
+            }
+
             if (!$dryRun) {
                 $this->commandBus->dispatch(new ProcessVideoTaskCommand($task->id()->value));
             }

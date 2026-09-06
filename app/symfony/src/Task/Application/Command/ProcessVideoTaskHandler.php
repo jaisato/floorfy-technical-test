@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Task\Application\Command;
 
 use App\Shared\Application\Clock\Clock;
+use App\Shared\Application\Redaction\Urls;
 use App\Shared\Domain\Exception\ClientSafe;
 use App\Shared\Domain\Exception\HasOperatorDetail;
 use App\Shared\Domain\ValueObject\UuidValue;
@@ -315,9 +316,13 @@ final readonly class ProcessVideoTaskHandler
         // database column that is served to API clients.
         $detail = $e instanceof HasOperatorDetail ? $e->operatorDetail() : [];
 
+        // A partial renders from a URL the client gave us, and for an object
+        // store that is routinely a presigned one. Symfony's transport
+        // exceptions quote the whole request URL back, so a connection that
+        // simply timed out wrote the signature into this line.
         $this->logger->error($what, $context + $detail + [
             'exception' => $e::class,
-            'message' => $e->getMessage(),
+            'message' => Urls::scrub($e->getMessage()),
         ]);
     }
 
