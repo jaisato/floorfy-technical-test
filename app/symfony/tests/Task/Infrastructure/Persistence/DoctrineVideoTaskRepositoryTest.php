@@ -132,6 +132,64 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
         self::assertTrue($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
     }
 
+    /**
+     * A run starting carries none of the previous one's outcome, whichever way
+     * in it came: the /retry endpoint goes through VideoTask::retry(), and
+     * `messenger:failed:retry` replays the original message straight into this
+     * claim. prunedAt is the one that does damage left behind - it says the
+     * task's files were reclaimed, and it is exactly what excludes a row from
+     * the retention sweep, so a replayed task kept telling clients its video
+     * was gone while rendering one nothing would ever clean up.
+     */
+    public function testClaimingAPrunedFailedTaskStartsItClean(): void
+    {
+        $task = $this->storedTask();
+        $task->markProcessing($this->now);
+        $task->markFailed('boom', $this->now);
+        $task->markPruned($this->now);
+        $this->repository->save($task);
+        $this->entityManager->clear();
+
+        self::assertTrue($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
+        $this->entityManager->clear();
+
+        $loaded = $this->repository->get($task->id());
+
+        self::assertNotNull($loaded);
+        self::assertSame(VideoTaskStatus::PROCESSING, $loaded->status());
+        self::assertNull($loaded->prunedAt(), 'a task rendering a new video is not one whose files were reclaimed');
+        self::assertNull($loaded->errorMessage());
+        self::assertNull($loaded->finalVideoUrl());
+    }
+
+    /** The sweep must be able to find it again once the new run settles. */
+    public function testATaskCompletedAfterAReplayIsPrunableAgain(): void
+    {
+        $task = $this->storedTask();
+        $task->markProcessing($this->now);
+        $task->markFailed('boom', $this->now);
+        $task->markPruned($this->now);
+        $this->repository->save($task);
+        $this->entityManager->clear();
+
+        $this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore());
+        $this->entityManager->clear();
+
+        $reclaimed = $this->repository->get($task->id());
+        self::assertNotNull($reclaimed);
+        $reclaimed->markCompleted('http://localhost/videos/again.mp4', $this->now);
+        $this->repository->save($reclaimed);
+        $this->entityManager->clear();
+
+        // A second past the last touch, so the cutoff is behind it.
+        $cutoff = $this->now->minusSeconds(-1);
+
+        self::assertContains(
+            $task->id()->value,
+            array_map(static fn (VideoTask $t): string => $t->id()->value, $this->repository->listPrunable($cutoff, 10)),
+        );
+    }
+
     /** A worker killed mid-task must not strand it in "processing" for ever. */
     public function testAClaimOlderThanTheLeaseCanBeTakenOver(): void
     {
