@@ -68,6 +68,7 @@ final readonly class DoctrinePartialVideoRepository implements PartialVideoRepos
             $entity->imageUrl = $partial->imageUrl();
             $entity->transition = $partial->transition()->value;
             $entity->position = $partial->position();
+            $entity->durationSeconds = $partial->durationSeconds();
             $entity->createdAt = $partial->createdAt()->toDateTimeImmutable();
             $this->em->persist($entity);
         }
@@ -91,6 +92,7 @@ final readonly class DoctrinePartialVideoRepository implements PartialVideoRepos
             $e->errorMessage,
             DateTimeValue::fromDateTimeImmutable($e->createdAt),
             DateTimeValue::fromDateTimeImmutable($e->updatedAt),
+            $e->durationSeconds,
         );
     }
 }

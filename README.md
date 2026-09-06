@@ -161,6 +161,8 @@ Puntos que merece la pena conocer:
 
 - `transition`: `pan`, `zoom_in` o `zoom_out`.
 - Máximo 20 imágenes por tarea; `url` hasta 2048 caracteres.
+- `duration` (opcional, por imagen) y `options` (opcional, para toda la tarea):
+  ver [Opciones de render](#opciones-de-render).
 - `callback_url` (opcional): URL a la que se notifica el desenlace (ver
   [Webhook](#webhook)). Pasa por la **misma guardia SSRF** que las imágenes en el
   momento de la petición: sólo `http`/`https`, puertos 80/443 y direcciones
@@ -169,6 +171,42 @@ Puntos que merece la pena conocer:
 - **400** un documento `application/problem+json` (ver [Errores](#errores)).
 - Acepta la cabecera `Idempotency-Key` (ver
   [Idempotencia](#idempotencia-idempotency-key)).
+
+### Opciones de render
+
+Todo es opcional; lo que no se manda se queda con el valor por defecto del
+despliegue (`RENDER_DEFAULT_*`).
+
+```json
+{
+  "images": [
+    { "url": "https://example.com/a.jpg", "transition": "zoom_in", "duration": 5 },
+    { "url": "https://example.com/b.jpg", "transition": "pan" }
+  ],
+  "options": { "duration": 3, "fps": 24, "resolution": "1920x1080", "crossfade": 0.5 }
+}
+```
+
+| Opción | Dónde | Valores |
+|---|---|---|
+| `duration` | tarea **y** imagen | 1–15 segundos |
+| `fps` | tarea | `24`, `25` o `30` |
+| `resolution` | tarea | `1280x720` o `1920x1080` |
+| `crossfade` | tarea | 0–2 segundos; `0` es un corte seco |
+
+Por qué sólo `duration` puede variar por imagen: sin fundido, los parciales se
+concatenan **copiando el flujo**, y eso sólo funciona mientras todos comparten
+codec, tamaño y frecuencia de fotogramas. Una imagen a 1080p/24 dentro de una
+tarea 720p/30 daría un fichero que se reproduce mal o no se reproduce.
+
+El fundido usa el filtro `xfade` de FFmpeg, que sí re-codifica: por eso el corte
+seco (`crossfade: 0`) es el valor por defecto y el camino barato. El fundido se
+recorta a la mitad del clip más corto — dos segundos de fundido entre clips de
+uno no son una transición, son un comando que FFmpeg rechaza.
+
+Las opciones se resuelven **al crear la tarea** y se guardan con ella, así que un
+`retry` meses después renderiza lo mismo aunque los valores por defecto del
+despliegue hayan cambiado.
 
 ### Idempotencia (`Idempotency-Key`)
 
@@ -496,6 +534,7 @@ que está en `.gitignore`.
 | `DEFAULT_URI` | base para generar URLs fuera de una petición HTTP |
 | `API_TOKENS` | claves de API `nombre:secreto,…`; **vacío = API abierta** (por defecto) |
 | `RATE_LIMIT_TASK_CREATION` | tareas por minuto y llamante; `0` = sin límite (por defecto) |
+| `RENDER_DEFAULT_DURATION`, `RENDER_DEFAULT_FPS`, `RENDER_DEFAULT_RESOLUTION`, `RENDER_DEFAULT_CROSSFADE` | valores por defecto de las [opciones de render](#opciones-de-render) |
 | `VIDEO_URL_SECRET` | clave HMAC de las URLs firmadas de `/videos/`; vacío = sin firmar |
 | `VIDEO_URL_TTL_SECONDS` | validez de una URL firmada (1 h por defecto) |
 | `VIDEOS_X_ACCEL_PREFIX` | *location* interna de nginx a la que se delega el envío del fichero; vacío = lo manda PHP |

@@ -7,10 +7,16 @@ namespace App\Task\Infrastructure\Video;
 use App\Shared\Infrastructure\Process\ProcessRunner;
 use App\Task\Domain\Enum\Transition;
 use App\Task\Domain\Port\ImageAnimator;
+use App\Task\Domain\ValueObject\RenderOptions;
 
 /**
  * Turns a still image into a short clip with a slow camera move, using ffmpeg's
  * zoompan filter.
+ *
+ * What the clip looks like - how long, how many frames a second, how large -
+ * comes from the task's options, not from this object: one worker renders many
+ * tasks, and they do not have to agree. What is configured per deployment is
+ * only what protects the machine: the time budget and the thread cap.
  */
 final readonly class FfmpegImageAnimator implements ImageAnimator
 {
@@ -19,18 +25,14 @@ final readonly class FfmpegImageAnimator implements ImageAnimator
         private int $timeoutSeconds = 600,
         /** 0 lets ffmpeg decide; set it to cap the CPU one worker can take. */
         private int $threads = 0,
-        private int $width = 1280,
-        private int $height = 720,
-        private int $fps = 30,
-        private float $durationSeconds = 3.0,
     ) {
     }
 
-    public function animate(string $imageFile, Transition $transition, string $outputFile): void
+    public function animate(string $imageFile, Transition $transition, string $outputFile, RenderOptions $options): void
     {
         self::ensureDirectoryOf($outputFile);
 
-        $result = $this->processes->run($this->buildCommand($imageFile, $transition, $outputFile), $this->timeoutSeconds);
+        $result = $this->processes->run($this->buildCommand($imageFile, $transition, $outputFile, $options), $this->timeoutSeconds);
 
         if (!$result->successful) {
             throw FfmpegFailed::from('animar la imagen', $result);
@@ -52,16 +54,16 @@ final readonly class FfmpegImageAnimator implements ImageAnimator
      *
      * @return list<string>
      */
-    public function buildCommand(string $imageFile, Transition $transition, string $outputFile): array
+    public function buildCommand(string $imageFile, Transition $transition, string $outputFile, RenderOptions $options): array
     {
         // Cover the frame at the requested size, cropping the overflow, before
         // the camera move is applied on top.
         $scale = \sprintf(
             'scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d',
-            $this->width,
-            $this->height,
-            $this->width,
-            $this->height,
+            $options->width(),
+            $options->height(),
+            $options->width(),
+            $options->height(),
         );
 
         return [
@@ -72,9 +74,9 @@ final readonly class FfmpegImageAnimator implements ImageAnimator
             '-threads', (string) $this->threads,
             '-loop', '1',
             '-i', $imageFile,
-            '-t', self::number($this->durationSeconds),
-            '-vf', $scale.','.$this->zoompanFor($transition),
-            '-r', (string) $this->fps,
+            '-t', self::number($options->duration),
+            '-vf', $scale.','.self::zoompanFor($transition, $options),
+            '-r', (string) $options->fps,
             '-c:v', 'libx264',
             '-pix_fmt', 'yuv420p',
             '-movflags', '+faststart',
@@ -82,14 +84,14 @@ final readonly class FfmpegImageAnimator implements ImageAnimator
         ];
     }
 
-    public function frameCount(): int
+    public static function frameCount(RenderOptions $options): int
     {
-        return max(1, (int) round($this->fps * $this->durationSeconds));
+        return max(1, (int) round($options->fps * $options->duration));
     }
 
-    private function zoompanFor(Transition $transition): string
+    private static function zoompanFor(Transition $transition, RenderOptions $options): string
     {
-        $frames = $this->frameCount();
+        $frames = self::frameCount($options);
         $centerX = 'iw/2-(iw/zoom/2)';
         $centerY = 'ih/2-(ih/zoom/2)';
 
@@ -99,27 +101,27 @@ final readonly class FfmpegImageAnimator implements ImageAnimator
                 $centerX,
                 $centerY,
                 $frames,
-                $this->width,
-                $this->height,
-                $this->fps,
+                $options->width(),
+                $options->height(),
+                $options->fps,
             ),
             Transition::ZOOM_OUT => \sprintf(
                 "zoompan=z='max(1.2-0.002*on,1.0)':x='%s':y='%s':d=%d:s=%dx%d:fps=%d",
                 $centerX,
                 $centerY,
                 $frames,
-                $this->width,
-                $this->height,
-                $this->fps,
+                $options->width(),
+                $options->height(),
+                $options->fps,
             ),
             Transition::PAN => \sprintf(
                 "zoompan=z='1.1':x='max(0,min(iw-(iw/zoom),(iw-(iw/zoom))*on/%d))':y='%s':d=%d:s=%dx%d:fps=%d",
                 $frames,
                 $centerY,
                 $frames,
-                $this->width,
-                $this->height,
-                $this->fps,
+                $options->width(),
+                $options->height(),
+                $options->fps,
             ),
         };
     }

@@ -6,10 +6,11 @@ namespace App\Tests\Support;
 
 use App\Task\Domain\Enum\Transition;
 use App\Task\Domain\Port\ImageAnimator;
+use App\Task\Domain\ValueObject\RenderOptions;
 
 final class FakeImageAnimator implements ImageAnimator
 {
-    /** @var list<array{image: string, transition: string, output: string}> */
+    /** @var list<array{image: string, transition: string, output: string, options: RenderOptions}> */
     public array $calls = [];
 
     private ?\Throwable $failure = null;
@@ -19,12 +20,13 @@ final class FakeImageAnimator implements ImageAnimator
         $this->failure = $error;
     }
 
-    public function animate(string $imageFile, Transition $transition, string $outputFile): void
+    public function animate(string $imageFile, Transition $transition, string $outputFile, RenderOptions $options): void
     {
         $this->calls[] = [
             'image' => $imageFile,
             'transition' => $transition->value,
             'output' => $outputFile,
+            'options' => $options,
         ];
 
         if (null !== $this->failure) {

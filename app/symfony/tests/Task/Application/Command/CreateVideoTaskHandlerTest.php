@@ -10,6 +10,7 @@ use App\Task\Application\Command\ProcessVideoTaskCommand;
 use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Enum\Transition;
 use App\Task\Domain\Enum\VideoTaskStatus;
+use App\Task\Domain\ValueObject\RenderOptions;
 use App\Tests\Support\FixedClock;
 use App\Tests\Support\InMemoryPartialVideoRepository;
 use App\Tests\Support\InMemoryVideoTaskRepository;
@@ -116,6 +117,12 @@ final class CreateVideoTaskHandlerTest extends TestCase
         self::assertSame([false], $this->bus->insideTransaction);
     }
 
+    /** What the deployment renders with when a task chooses nothing. */
+    private static function defaults(): RenderOptions
+    {
+        return new RenderOptions(3.0, 30, '1280x720', 0.0);
+    }
+
     private function handler(): CreateVideoTaskHandler
     {
         return new CreateVideoTaskHandler(
@@ -124,6 +131,7 @@ final class CreateVideoTaskHandlerTest extends TestCase
             new FixedClock(),
             $this->transaction,
             $this->bus,
+            self::defaults(),
         );
     }
 }

@@ -6,6 +6,8 @@ namespace App\Tests\Task\Infrastructure\Video;
 
 use App\Shared\Infrastructure\Process\SymfonyProcessRunner;
 use App\Task\Domain\Enum\Transition;
+use App\Task\Domain\ValueObject\Clip;
+use App\Task\Domain\ValueObject\RenderOptions;
 use App\Task\Infrastructure\Video\FfmpegImageAnimator;
 use App\Task\Infrastructure\Video\FfmpegVideoComposer;
 use App\Tests\Support\TempDirectory;
@@ -49,7 +51,7 @@ final class FfmpegSmokeTest extends TestCase
     {
         $clip = $this->dir->file('clip.mp4');
 
-        $this->animator()->animate($this->image('source.png'), $transition, $clip);
+        $this->animator()->animate($this->image('source.png'), $transition, $clip, self::options());
 
         self::assertFileExists($clip);
         self::assertGreaterThan(1024, (int) filesize($clip));
@@ -61,11 +63,11 @@ final class FfmpegSmokeTest extends TestCase
         $second = $this->dir->file('b.mp4');
         $final = $this->dir->file('final.mp4');
 
-        $this->animator()->animate($this->image('a.png'), Transition::PAN, $first);
-        $this->animator()->animate($this->image('b.png'), Transition::ZOOM_IN, $second);
+        $this->animator()->animate($this->image('a.png'), Transition::PAN, $first, self::options());
+        $this->animator()->animate($this->image('b.png'), Transition::ZOOM_IN, $second, self::options());
 
         new FfmpegVideoComposer(new SymfonyProcessRunner(), $this->dir->file('work'))
-            ->compose([$first, $second], $final);
+            ->compose([new Clip($first, 1.0), new Clip($second, 1.0)], $final, self::options());
 
         self::assertFileExists($final);
         self::assertGreaterThan(filesize($first), filesize($final));
@@ -73,9 +75,16 @@ final class FfmpegSmokeTest extends TestCase
 
     private function animator(): FfmpegImageAnimator
     {
-        // One second at ten frames keeps the suite quick; the filter graph is
-        // the same one production uses.
-        return new FfmpegImageAnimator(new SymfonyProcessRunner(), 120, 1, 320, 240, 10, 1.0);
+        return new FfmpegImageAnimator(new SymfonyProcessRunner(), 120, 1);
+    }
+
+    /**
+     * The shortest clip the options allow, at the smallest frame size, keeps
+     * the suite quick; the filter graph is the one production uses.
+     */
+    private static function options(float $crossfade = 0.0): RenderOptions
+    {
+        return new RenderOptions(1.0, 24, '1280x720', $crossfade);
     }
 
     private function image(string $name): string
