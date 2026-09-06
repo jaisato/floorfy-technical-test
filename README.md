@@ -344,6 +344,42 @@ un driver pone el host al que no pudo conectar —: eso va al log.
 Se sirven directamente por nginx bajo `/videos/`, con caché larga: el nombre
 lleva el id, así que el fichero es inmutable.
 
+### Salud (`/health`, `/health/ready`)
+
+Dos preguntas distintas, con dos respuestas distintas — mezclarlas es lo que
+hace que un orquestador reinicie una aplicación sana porque su base de datos se
+ha caído:
+
+| Endpoint | Pregunta | Respuesta |
+|---|---|---|
+| `GET /health` | *liveness*: ¿sigue vivo el proceso? | siempre **200** `{"status":"ok"}`; no toca nada |
+| `GET /health/ready` | *readiness*: ¿puede trabajar ahora? | **200** si todo pasa, **503** si algo falla |
+
+```json
+{
+  "status": "unavailable",
+  "checks": { "database": "ok", "ffmpeg": "failed", "transport": "ok", "videos_dir": "ok", "work_dir": "ok" }
+}
+```
+
+Qué se comprueba: un `SELECT 1` contra MySQL, el recuento de la cola `async`
+(que es lo que abre de verdad la conexión con RabbitMQ), `ffmpeg -version`, y
+que `public/videos` y el directorio de trabajo existen y son escribibles (los
+dos son volúmenes de Docker, y un volumen creado antes que la imagen es la forma
+clásica de que todos los renders fallen en el último paso).
+
+El cuerpo dice **qué** comprobación falla, nunca **por qué**: el motivo (un
+host, una ruta, un mensaje del driver) va al log. Los dos endpoints siguen
+siendo públicos aunque la API key esté activada — un *prober* no tiene token — y
+la respuesta de readiness nunca se cachea.
+
+Lo mismo desde la shell, que es lo que ejecutan los *healthchecks* de los
+contenedores (el worker no sirve HTTP y php-fpm no habla HTTP):
+
+```bash
+docker compose exec php php bin/console app:health:ready   # 0 = listo, 1 = no
+```
+
 ---
 
 ## Variables de entorno

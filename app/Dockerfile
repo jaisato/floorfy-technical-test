@@ -60,4 +60,9 @@ RUN set -eux; \
 # when they are first created, so no chown is needed at container start.
 USER www-data
 
+# The same checks GET /health/ready runs. Declared here as well as in compose so
+# that the image is self-describing wherever it is deployed.
+HEALTHCHECK --interval=15s --timeout=10s --start-period=30s --retries=5 \
+    CMD ["php", "bin/console", "app:health:ready"]
+
 ENTRYPOINT ["entrypoint-php.sh"]
