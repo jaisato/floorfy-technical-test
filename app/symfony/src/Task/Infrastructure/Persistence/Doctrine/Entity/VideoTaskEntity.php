@@ -9,10 +9,12 @@ use Doctrine\ORM\Mapping as ORM;
 
 #[ORM\Entity]
 #[ORM\Table(name: 'video_tasks')]
-// The worker claims by status and the API lists newest-first; both are index
-// scans rather than full table scans once the tasks pile up.
-#[ORM\Index(columns: ['status'], name: 'idx_video_tasks_status')]
-#[ORM\Index(columns: ['created_at'], name: 'idx_video_tasks_created_at')]
+// The listing filters by status and by a created_at range and orders by
+// (created_at DESC, id DESC): each composite carries the sort key, so a page is
+// an index range read backwards rather than a sort, and the single-column
+// lookups (the worker's status check) use the same indexes as a prefix.
+#[ORM\Index(columns: ['status', 'created_at', 'id'], name: 'idx_video_tasks_status_created_at_id')]
+#[ORM\Index(columns: ['created_at', 'id'], name: 'idx_video_tasks_created_at_id')]
 class VideoTaskEntity
 {
     #[ORM\Id]

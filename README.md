@@ -106,7 +106,8 @@ POST /api/tasks
       │  3. publica cada clip con rename() -> public/videos/partial_<id>.mp4
       │  4. concatena los clips y publica public/videos/final_<task>.mp4
       ▼
-GET /api/tasks/{id}          estado de la tarea y de cada parte
+GET /api/tasks               listado paginado con filtros
+GET /api/tasks/{id}          estado y progreso de la tarea y de cada parte
 GET /api/tasks/{id}/final    URL del vídeo final
 ```
 
@@ -152,6 +153,35 @@ Puntos que merece la pena conocer:
 - Máximo 20 imágenes por tarea; `url` hasta 2048 caracteres.
 - **201** `{"task_id": "...", "status": "pending"}`
 - **400** un documento `application/problem+json` (ver [Errores](#errores)).
+
+### `GET /api/tasks`
+
+Listado paginado, de la más reciente a la más antigua (`created_at` descendente,
+con el `id` como desempate, así que dos páginas nunca se solapan):
+
+```
+GET /api/tasks?status=failed&createdFrom=2026-01-01&createdTo=2026-01-31T23:59:59Z&page=2&limit=20
+```
+
+| Parámetro | Valor |
+|---|---|
+| `status` | `pending`, `processing`, `completed` o `failed` |
+| `createdFrom`, `createdTo` | fecha ISO 8601 (una fecha sola es el inicio de ese día, en UTC); ambos límites inclusivos |
+| `page` | número de página, desde 1 |
+| `limit` | tamaño de página (20 por defecto, máximo 100; un valor mayor se recorta a 100) |
+
+```json
+{
+  "items": [ { "task_id": "…", "status": "…", "progress": { "…": "…" }, "final_video_url": null, "error": null, "created_at": "…", "updated_at": "…" } ],
+  "total": 41, "page": 2, "limit": 20, "pages": 3, "hasNext": true
+}
+```
+
+Cada elemento es el mismo resumen que devuelve `GET /api/tasks/{id}`, sin
+`partial_videos`. La cabecera `Link` (RFC 8288) lleva las páginas vecinas
+(`rel="prev"`, `rel="next"`) con todos los filtros de la petición. Un
+parámetro inválido (estado desconocido, fecha que no lo es, `page` o `limit`
+que no son enteros positivos, rango invertido) es un **400** con `violations`.
 
 ### `GET /api/tasks/{id}`
 
