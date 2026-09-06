@@ -14,6 +14,7 @@ use App\Ui\Http\Request\CreateTaskRequest;
 use App\Ui\Http\Request\ListTasksRequest;
 use App\Ui\Http\Response\ApiProblem;
 use App\Ui\Http\Response\PageResponse;
+use OpenApi\Attributes as OA;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -27,6 +28,11 @@ use Symfony\Component\Validator\Validator\ValidatorInterface;
 
 #[AsController]
 #[Route('/api/tasks')]
+#[OA\Tag(name: 'Tareas')]
+// Which credentials the API accepts is declared once, for the whole document,
+// in nelmio_api_doc.yaml: both schemes, plus "none", because with API_TOKENS
+// empty the API is open. The 401 belongs on every operation, though.
+#[OA\Response(response: 401, ref: '#/components/responses/Unauthorized')]
 final readonly class TaskController
 {
     public function __construct(
@@ -37,6 +43,54 @@ final readonly class TaskController
     }
 
     #[Route('', name: 'api_tasks_create', methods: ['POST'])]
+    #[OA\Post(
+        summary: 'Crea una tarea de vídeo',
+        description: 'Escribe la tarea y sus partes en una transacción y encola el trabajo. El vídeo se genera en segundo plano.',
+    )]
+    #[OA\Parameter(ref: '#/components/parameters/idempotencyKey')]
+    #[OA\RequestBody(
+        required: true,
+        content: new OA\JsonContent(
+            required: ['images'],
+            properties: [
+                new OA\Property(
+                    property: 'images',
+                    description: 'De 1 a 20 imágenes, en el orden en que se concatenan.',
+                    type: 'array',
+                    items: new OA\Items(
+                        required: ['url', 'transition'],
+                        properties: [
+                            new OA\Property(property: 'url', type: 'string', maxLength: 2048, example: 'https://example.com/a.jpg'),
+                            new OA\Property(property: 'transition', type: 'string', enum: ['pan', 'zoom_in', 'zoom_out']),
+                            new OA\Property(property: 'duration', type: 'number', format: 'float', maximum: 15, minimum: 1),
+                        ],
+                        type: 'object',
+                    ),
+                    maxItems: 20,
+                    minItems: 1,
+                ),
+                new OA\Property(property: 'callback_url', description: 'Se notifica el desenlace con un POST firmado. Pasa por la misma guardia SSRF que las imágenes.', type: 'string', nullable: true),
+                new OA\Property(property: 'options', ref: '#/components/schemas/RenderOptions'),
+            ],
+            type: 'object',
+        ),
+    )]
+    #[OA\Response(
+        response: 201,
+        description: 'Tarea creada. Con Idempotency-Key repetida, la respuesta original y la cabecera Idempotency-Replayed: true.',
+        content: new OA\JsonContent(
+            required: ['task_id', 'status'],
+            properties: [
+                new OA\Property(property: 'task_id', type: 'string', format: 'uuid'),
+                new OA\Property(property: 'status', type: 'string', example: 'pending'),
+            ],
+            type: 'object',
+        ),
+    )]
+    #[OA\Response(response: 400, ref: '#/components/responses/BadRequest')]
+    #[OA\Response(response: 409, description: 'Una petición con esa Idempotency-Key sigue en curso.', content: new OA\JsonContent(ref: '#/components/schemas/Problem'))]
+    #[OA\Response(response: 422, ref: '#/components/responses/UnprocessableEntity')]
+    #[OA\Response(response: 429, ref: '#/components/responses/TooManyRequests')]
     public function create(Request $request): JsonResponse
     {
         $payload = json_decode($request->getContent(), true);
@@ -68,6 +122,17 @@ final readonly class TaskController
     }
 
     #[Route('', name: 'api_tasks_list', methods: ['GET'])]
+    #[OA\Get(
+        summary: 'Lista tareas',
+        description: 'De la más reciente a la más antigua. La cabecera Link (RFC 8288) lleva las páginas vecinas con todos los filtros de la petición.',
+    )]
+    #[OA\Parameter(name: 'status', in: 'query', schema: new OA\Schema(type: 'string', enum: ['pending', 'processing', 'completed', 'failed', 'canceled']))]
+    #[OA\Parameter(name: 'createdFrom', description: 'Fecha ISO 8601; una fecha sola es el inicio de ese día, en UTC.', in: 'query', schema: new OA\Schema(type: 'string'))]
+    #[OA\Parameter(name: 'createdTo', in: 'query', schema: new OA\Schema(type: 'string'))]
+    #[OA\Parameter(name: 'page', in: 'query', schema: new OA\Schema(type: 'integer', default: 1, minimum: 1))]
+    #[OA\Parameter(name: 'limit', description: 'Un valor mayor que el máximo se recorta al máximo.', in: 'query', schema: new OA\Schema(type: 'integer', default: 20, maximum: 100, minimum: 1))]
+    #[OA\Response(response: 200, description: 'Una página de tareas.', content: new OA\JsonContent(ref: '#/components/schemas/TaskPage'))]
+    #[OA\Response(response: 400, ref: '#/components/responses/BadRequest')]
     public function list(Request $request): JsonResponse
     {
         $dto = ListTasksRequest::fromQuery($request->query->all());
@@ -87,6 +152,10 @@ final readonly class TaskController
     }
 
     #[Route('/{id}', name: 'api_tasks_get', requirements: ['id' => Requirement::UUID], methods: ['GET'])]
+    #[OA\Get(summary: 'Estado y progreso de una tarea', description: 'Incluye cada parte con su URL o su error.')]
+    #[OA\Parameter(ref: '#/components/parameters/taskId')]
+    #[OA\Response(response: 200, description: 'La tarea y sus partes.', content: new OA\JsonContent(ref: '#/components/schemas/Task'))]
+    #[OA\Response(response: 404, ref: '#/components/responses/NotFound')]
     public function get(string $id): JsonResponse
     {
         $view = $this->view($id);
@@ -99,6 +168,22 @@ final readonly class TaskController
     }
 
     #[Route('/{id}/final', name: 'api_tasks_final', requirements: ['id' => Requirement::UUID], methods: ['GET'])]
+    #[OA\Get(summary: 'URL del vídeo final', description: 'null mientras la tarea no ha terminado. Con VIDEO_URL_SECRET configurado la URL va firmada y caduca.')]
+    #[OA\Parameter(ref: '#/components/parameters/taskId')]
+    #[OA\Response(
+        response: 200,
+        description: 'El desenlace de la tarea.',
+        content: new OA\JsonContent(
+            required: ['task_id', 'status', 'final_video_url'],
+            properties: [
+                new OA\Property(property: 'task_id', type: 'string', format: 'uuid'),
+                new OA\Property(property: 'status', type: 'string'),
+                new OA\Property(property: 'final_video_url', type: 'string', nullable: true),
+            ],
+            type: 'object',
+        ),
+    )]
+    #[OA\Response(response: 404, ref: '#/components/responses/NotFound')]
     public function final(string $id): JsonResponse
     {
         $view = $this->view($id);
@@ -120,6 +205,14 @@ final readonly class TaskController
      * 409 when the task already completed, failed or was canceled.
      */
     #[Route('/{id}', name: 'api_tasks_cancel', requirements: ['id' => Requirement::UUID], methods: ['DELETE'])]
+    #[OA\Delete(
+        summary: 'Cancela una tarea sin terminar',
+        description: 'Una tarea pendiente no se recoge; una en curso se detiene en la siguiente parte, conservando los clips ya generados.',
+    )]
+    #[OA\Parameter(ref: '#/components/parameters/taskId')]
+    #[OA\Response(response: 200, description: 'La tarea, ya cancelada.', content: new OA\JsonContent(ref: '#/components/schemas/Task'))]
+    #[OA\Response(response: 404, ref: '#/components/responses/NotFound')]
+    #[OA\Response(response: 409, ref: '#/components/responses/Conflict')]
     public function cancel(string $id): JsonResponse
     {
         $this->commandBus->dispatch(new CancelVideoTaskCommand($id));
@@ -132,6 +225,14 @@ final readonly class TaskController
      * rest are rendered afresh. 409 for any other status.
      */
     #[Route('/{id}/retry', name: 'api_tasks_retry', requirements: ['id' => Requirement::UUID], methods: ['POST'])]
+    #[OA\Post(
+        summary: 'Reencola una tarea fallida o cancelada',
+        description: 'Las partes completadas se conservan con su vídeo; sólo se vuelve a renderizar lo que falta.',
+    )]
+    #[OA\Parameter(ref: '#/components/parameters/taskId')]
+    #[OA\Response(response: 202, description: 'La tarea, de vuelta en la cola.', content: new OA\JsonContent(ref: '#/components/schemas/Task'))]
+    #[OA\Response(response: 404, ref: '#/components/responses/NotFound')]
+    #[OA\Response(response: 409, ref: '#/components/responses/Conflict')]
     public function retry(string $id): JsonResponse
     {
         $this->commandBus->dispatch(new RetryVideoTaskCommand($id));

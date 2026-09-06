@@ -321,6 +321,26 @@ dirección validada por la guardia (como con las imágenes). Un fallo de entrega
 nada sin firmar (la notificación acaba en la cola `failed`, con el motivo en el
 log).
 
+### OpenAPI
+
+`GET /api/doc.json` devuelve el documento OpenAPI 3 de la API (público aunque
+`API_TOKENS` esté configurado: nadie debería tener que autenticarse para leer el
+contrato). Se genera con `nelmio/api-doc-bundle` a partir de los atributos de los
+controladores más los esquemas compartidos de
+`config/packages/nelmio_api_doc.yaml` (`Problem`, `Task`, `TaskPage`,
+`RenderOptions`, los dos esquemas de seguridad…).
+
+`tests/Ui/Http/OpenApiTest.php` compara el documento con el router: **una ruta
+nueva sin documentar rompe la suite**, igual que una operación sin `summary`, una
+respuesta sin cuerpo o un `401`/`404` sin declarar. Un documento escrito a mano
+caduca en cuanto alguien añade un endpoint; éste no puede.
+
+Para verlo con Swagger UI, sin añadir dependencias al proyecto:
+
+```bash
+docker run --rm -p 8081:8080 -e SWAGGER_JSON_URL=http://localhost:8080/api/doc.json swaggerapi/swagger-ui
+```
+
 ### Errores
 
 Un único contrato para toda la API, venga el error de un controlador, del router
