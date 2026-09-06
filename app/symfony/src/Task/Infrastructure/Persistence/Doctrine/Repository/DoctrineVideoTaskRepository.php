@@ -20,6 +20,18 @@ use Doctrine\ORM\Query;
 
 final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
 {
+    /**
+     * How many times a transition re-reads the generation and tries its
+     * compare again before giving up.
+     *
+     * Each pass is only spent on a racer that got its write in first, and it
+     * leaves the row where this transition's own status conditions decide:
+     * either they now refuse it, which ends the loop on the next pass, or they
+     * still allow it and one more compare settles it. Three is a bound, not an
+     * expectation - the second pass is already the unlikely one.
+     */
+    private const int TRANSITION_ATTEMPTS = 3;
+
     public function __construct(private EntityManagerInterface $em)
     {
     }
@@ -75,7 +87,7 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         return $entity instanceof VideoTaskEntity ? $this->toDomain($entity) : null;
     }
 
-    public function claimForProcessing(UuidValue $id, DateTimeValue $now, DateTimeValue $staleBefore): bool
+    public function claimForProcessing(UuidValue $id, DateTimeValue $now, DateTimeValue $staleBefore): ?int
     {
         // One statement, so the database arbitrates. Read-then-write would let
         // two workers both see "pending" and both start.
@@ -88,15 +100,23 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         // video while still telling clients its files were gone, and prunedAt
         // is exactly what excludes a row from the sweep, so nothing would ever
         // clean the new ones up.
-        $affected = $this->em->getConnection()->executeStatement(
+        //
+        // run_generation is what the claim hands the worker. Everything it
+        // writes afterwards is conditional on it, so an attempt that was taken
+        // over cannot renew, release or complete a claim that is no longer
+        // its own.
+        return $this->transitionWithGeneration(
+            $id,
             <<<'SQL'
                 UPDATE video_tasks
                    SET status = :processing,
                        updated_at = :now,
                        error_message = NULL,
                        final_video_url = NULL,
-                       pruned_at = NULL
+                       pruned_at = NULL,
+                       run_generation = :next
                  WHERE id = :id
+                   AND run_generation = :current
                    AND (status = :pending
                         OR status = :failed
                         OR (status = :processing AND updated_at <= :stale))
@@ -107,7 +127,6 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
                 'failed' => VideoTaskStatus::FAILED->value,
                 'now' => $now->toDateTimeImmutable(),
                 'stale' => $staleBefore->toDateTimeImmutable(),
-                'id' => $id->value,
             ],
             [
                 'processing' => ParameterType::STRING,
@@ -115,36 +134,31 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
                 'failed' => ParameterType::STRING,
                 'now' => Types::DATETIME_IMMUTABLE,
                 'stale' => Types::DATETIME_IMMUTABLE,
-                'id' => ParameterType::STRING,
             ],
         );
-
-        if ($affected < 1) {
-            return false;
-        }
-
-        $this->forgetCachedCopy($id);
-
-        return true;
     }
 
-    public function release(UuidValue $id, DateTimeValue $now): bool
+    public function release(UuidValue $id, int $generation, DateTimeValue $now): bool
     {
         $affected = $this->em->getConnection()->executeStatement(
             <<<'SQL'
                 UPDATE video_tasks
-                   SET status = :pending, updated_at = :now
-                 WHERE id = :id AND status = :processing
+                   SET status = :pending, updated_at = :now, run_generation = :next
+                 WHERE id = :id AND status = :processing AND run_generation = :generation
                 SQL,
             [
                 'pending' => VideoTaskStatus::PENDING->value,
                 'processing' => VideoTaskStatus::PROCESSING->value,
+                'generation' => $generation,
+                'next' => $generation + 1,
                 'now' => $now->toDateTimeImmutable(),
                 'id' => $id->value,
             ],
             [
                 'pending' => ParameterType::STRING,
                 'processing' => ParameterType::STRING,
+                'generation' => ParameterType::INTEGER,
+                'next' => ParameterType::INTEGER,
                 'now' => Types::DATETIME_IMMUTABLE,
                 'id' => ParameterType::STRING,
             ],
@@ -159,21 +173,25 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         return true;
     }
 
-    public function renewLease(UuidValue $id, DateTimeValue $now): bool
+    public function renewLease(UuidValue $id, int $generation, DateTimeValue $now): bool
     {
+        // No bump: a renewal says the same attempt is still running, so the
+        // number it is holding has to survive it.
         $affected = $this->em->getConnection()->executeStatement(
             <<<'SQL'
                 UPDATE video_tasks
                    SET updated_at = :now
-                 WHERE id = :id AND status = :processing
+                 WHERE id = :id AND status = :processing AND run_generation = :generation
                 SQL,
             [
                 'processing' => VideoTaskStatus::PROCESSING->value,
+                'generation' => $generation,
                 'now' => $now->toDateTimeImmutable(),
                 'id' => $id->value,
             ],
             [
                 'processing' => ParameterType::STRING,
+                'generation' => ParameterType::INTEGER,
                 'now' => Types::DATETIME_IMMUTABLE,
                 'id' => ParameterType::STRING,
             ],
@@ -188,17 +206,26 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         return true;
     }
 
-    public function complete(UuidValue $id, string $finalVideoUrl, DateTimeValue $now): bool
+    public function complete(UuidValue $id, string $finalVideoUrl, int $generation, DateTimeValue $now): ?int
     {
+        // The one transition whose new number needs no read: the caller is
+        // holding the claim this completes, so the number after it is that
+        // claim's plus one, and the compare in the WHERE is what proves it.
         $affected = $this->em->getConnection()->executeStatement(
             <<<'SQL'
                 UPDATE video_tasks
-                   SET status = :completed, final_video_url = :url, error_message = NULL, updated_at = :now
-                 WHERE id = :id AND status = :processing
+                   SET status = :completed,
+                       final_video_url = :url,
+                       error_message = NULL,
+                       updated_at = :now,
+                       run_generation = :next
+                 WHERE id = :id AND status = :processing AND run_generation = :generation
                 SQL,
             [
                 'completed' => VideoTaskStatus::COMPLETED->value,
                 'processing' => VideoTaskStatus::PROCESSING->value,
+                'generation' => $generation,
+                'next' => $generation + 1,
                 'url' => $finalVideoUrl,
                 'now' => $now->toDateTimeImmutable(),
                 'id' => $id->value,
@@ -206,6 +233,8 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
             [
                 'completed' => ParameterType::STRING,
                 'processing' => ParameterType::STRING,
+                'generation' => ParameterType::INTEGER,
+                'next' => ParameterType::INTEGER,
                 'url' => ParameterType::STRING,
                 'now' => Types::DATETIME_IMMUTABLE,
                 'id' => ParameterType::STRING,
@@ -213,34 +242,34 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         );
 
         if ($affected < 1) {
-            return false;
+            return null;
         }
 
         $this->forgetCachedCopy($id);
 
-        return true;
+        return $generation + 1;
     }
 
-    public function markCallbackNotified(UuidValue $id, string $event, DateTimeValue $settledAt, DateTimeValue $now): bool
+    public function markCallbackNotified(UuidValue $id, string $event, int $generation, DateTimeValue $now): bool
     {
         // Conditional on the task still standing where the notification said
         // it did: a retry that landed while the delivery was in flight has
         // moved it on, and this mark would answer for a run whose own
         // notification never went out.
         //
-        // The status alone does not say that. It is reusable: run A ends
+        // The generation is what says so. The status is reusable - run A ends
         // failed, its delivery is slow, a retry starts run B and it ends
-        // failed too - and A's mark was accepted for B, so when B's own
-        // notification was lost the sweep saw callback_notified_at set and
-        // never offered the task again. updated_at is what tells the two runs
-        // apart: every terminal transition writes it, and neither this mark
-        // nor the sweep's claim touches it. (DATETIME, so one second is the
-        // resolution; two runs of the same task settling inside one second is
-        // not a thing a render does.)
+        // failed too, and A's mark was accepted for B - and so, in practice,
+        // was updated_at, which tried to stand in for the run before this
+        // column existed: MySQL DATETIME has one second of resolution, and
+        // cancel, retry, cancel with no worker in between settles two runs
+        // inside it. Every transition that starts or ends a run moves the
+        // generation on, so the number a notification carries names one of
+        // them and is never seen twice.
         $affected = $this->em->getConnection()->executeStatement(
-            'UPDATE video_tasks SET callback_notified_at = :now WHERE id = :id AND status = :event AND updated_at = :settled',
-            ['now' => $now->toDateTimeImmutable(), 'id' => $id->value, 'event' => $event, 'settled' => $settledAt->toDateTimeImmutable()],
-            ['now' => Types::DATETIME_IMMUTABLE, 'id' => ParameterType::STRING, 'event' => ParameterType::STRING, 'settled' => Types::DATETIME_IMMUTABLE],
+            'UPDATE video_tasks SET callback_notified_at = :now WHERE id = :id AND status = :event AND run_generation = :generation',
+            ['now' => $now->toDateTimeImmutable(), 'id' => $id->value, 'event' => $event, 'generation' => $generation],
+            ['now' => Types::DATETIME_IMMUTABLE, 'id' => ParameterType::STRING, 'event' => ParameterType::STRING, 'generation' => ParameterType::INTEGER],
         );
 
         $this->forgetCachedCopy($id);
@@ -248,7 +277,7 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         return 1 === $affected;
     }
 
-    public function markCallbackAbandoned(UuidValue $id, string $event, DateTimeValue $settledAt, DateTimeValue $now): bool
+    public function markCallbackAbandoned(UuidValue $id, string $event, int $generation, DateTimeValue $now): bool
     {
         // The same fence as the mark above, and for the same reason: a task
         // that settled again while this delivery was being refused owes a
@@ -256,9 +285,9 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         // run. Written unconditionally it would silence the sweep for a run
         // whose own notification never went out.
         $affected = $this->em->getConnection()->executeStatement(
-            'UPDATE video_tasks SET callback_abandoned_at = :now WHERE id = :id AND status = :event AND updated_at = :settled',
-            ['now' => $now->toDateTimeImmutable(), 'id' => $id->value, 'event' => $event, 'settled' => $settledAt->toDateTimeImmutable()],
-            ['now' => Types::DATETIME_IMMUTABLE, 'id' => ParameterType::STRING, 'event' => ParameterType::STRING, 'settled' => Types::DATETIME_IMMUTABLE],
+            'UPDATE video_tasks SET callback_abandoned_at = :now WHERE id = :id AND status = :event AND run_generation = :generation',
+            ['now' => $now->toDateTimeImmutable(), 'id' => $id->value, 'event' => $event, 'generation' => $generation],
+            ['now' => Types::DATETIME_IMMUTABLE, 'id' => ParameterType::STRING, 'event' => ParameterType::STRING, 'generation' => ParameterType::INTEGER],
         );
 
         $this->forgetCachedCopy($id);
@@ -314,7 +343,7 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         return 1 === $affected;
     }
 
-    public function claimCallbackNotification(UuidValue $id, DateTimeValue $before, DateTimeValue $now): bool
+    public function claimCallbackNotification(UuidValue $id, int $generation, DateTimeValue $before, DateTimeValue $now): bool
     {
         // Conditional, like the claim on a task: two sweeps running at once
         // both read the row as owed, and only the one whose UPDATE lands gets
@@ -327,11 +356,17 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         // under way. The client was told the task had failed as it started
         // over. Status, cutoff and "asked for a callback at all" are what make
         // a concurrent retry lose the claim.
+        //
+        // And the generation, which is the run the listing read: a task that
+        // was retried and settled again in between satisfies every clause
+        // above once more, and the notification this sweep is about to publish
+        // is the previous run's.
         $affected = $this->em->getConnection()->executeStatement(
             <<<'SQL'
                 UPDATE video_tasks
                    SET callback_attempted_at = :now
                  WHERE id = :id
+                   AND run_generation = :generation
                    AND callback_url IS NOT NULL
                    AND callback_notified_at IS NULL
                    AND callback_abandoned_at IS NULL
@@ -343,6 +378,7 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
                 'now' => $now->toDateTimeImmutable(),
                 'before' => $before->toDateTimeImmutable(),
                 'id' => $id->value,
+                'generation' => $generation,
                 'settled' => array_map(
                     static fn (VideoTaskStatus $status): string => $status->value,
                     VideoTaskStatus::settled(),
@@ -352,6 +388,7 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
                 'now' => Types::DATETIME_IMMUTABLE,
                 'before' => Types::DATETIME_IMMUTABLE,
                 'id' => ParameterType::STRING,
+                'generation' => ParameterType::INTEGER,
                 'settled' => ArrayParameterType::STRING,
             ],
         );
@@ -361,13 +398,16 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         return 1 === $affected;
     }
 
-    public function markFailedIfStillRunning(UuidValue $id, string $errorMessage, DateTimeValue $now): bool
+    public function markFailedIfStillRunning(UuidValue $id, string $errorMessage, DateTimeValue $now): ?int
     {
-        $affected = $this->em->getConnection()->executeStatement(
+        return $this->transitionWithGeneration(
+            $id,
             <<<'SQL'
                 UPDATE video_tasks
-                   SET status = :failed, error_message = :error, updated_at = :now
-                 WHERE id = :id AND (status = :pending OR status = :processing)
+                   SET status = :failed, error_message = :error, updated_at = :now, run_generation = :next
+                 WHERE id = :id
+                   AND run_generation = :current
+                   AND (status = :pending OR status = :processing)
                 SQL,
             [
                 'failed' => VideoTaskStatus::FAILED->value,
@@ -375,7 +415,6 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
                 'pending' => VideoTaskStatus::PENDING->value,
                 'processing' => VideoTaskStatus::PROCESSING->value,
                 'now' => $now->toDateTimeImmutable(),
-                'id' => $id->value,
             ],
             [
                 'failed' => ParameterType::STRING,
@@ -383,50 +422,99 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
                 'pending' => ParameterType::STRING,
                 'processing' => ParameterType::STRING,
                 'now' => Types::DATETIME_IMMUTABLE,
-                'id' => ParameterType::STRING,
             ],
         );
-
-        if ($affected < 1) {
-            return false;
-        }
-
-        $this->forgetCachedCopy($id);
-
-        return true;
     }
 
-    public function cancel(UuidValue $id, DateTimeValue $now): bool
+    public function cancel(UuidValue $id, DateTimeValue $now): ?int
     {
-        $affected = $this->em->getConnection()->executeStatement(
+        return $this->transitionWithGeneration(
+            $id,
             <<<'SQL'
                 UPDATE video_tasks
-                   SET status = :canceled, updated_at = :now
-                 WHERE id = :id AND (status = :pending OR status = :processing)
+                   SET status = :canceled, updated_at = :now, run_generation = :next
+                 WHERE id = :id
+                   AND run_generation = :current
+                   AND (status = :pending OR status = :processing)
                 SQL,
             [
                 'canceled' => VideoTaskStatus::CANCELED->value,
                 'pending' => VideoTaskStatus::PENDING->value,
                 'processing' => VideoTaskStatus::PROCESSING->value,
                 'now' => $now->toDateTimeImmutable(),
-                'id' => $id->value,
             ],
             [
                 'canceled' => ParameterType::STRING,
                 'pending' => ParameterType::STRING,
                 'processing' => ParameterType::STRING,
                 'now' => Types::DATETIME_IMMUTABLE,
-                'id' => ParameterType::STRING,
             ],
         );
+    }
 
-        if ($affected < 1) {
-            return false;
+    /**
+     * Runs a transition that has to report the generation it produced.
+     *
+     * The number cannot be read back after the UPDATE: a claim can take a
+     * task the moment it lands on `failed`, and the value read a moment later
+     * would then be that new run's - handed to the caller as its own. So the
+     * current number is read first and written into the compare, and the new
+     * one is that plus one: whatever the statement changes, the number
+     * returned is the one this transition wrote and no other.
+     *
+     * A failed compare is either the row's own conditions refusing the
+     * transition or somebody else's write landing in between, and only the
+     * second is worth another pass. Reading the generation again tells them
+     * apart, and each pass narrows the field: a racer that got in first has
+     * left the row where the status conditions decide afresh.
+     *
+     * @param array<string, mixed>                $params the statement's own parameters; `id`, `current` and `next` are added here
+     * @param array<string, ParameterType|string> $types  their types, likewise
+     */
+    private function transitionWithGeneration(UuidValue $id, string $sql, array $params, array $types): ?int
+    {
+        for ($attempt = 0; $attempt < self::TRANSITION_ATTEMPTS; ++$attempt) {
+            $current = $this->generationOf($id);
+
+            if (null === $current) {
+                return null;
+            }
+
+            $next = $current + 1;
+
+            $affected = $this->em->getConnection()->executeStatement(
+                $sql,
+                [...$params, 'id' => $id->value, 'current' => $current, 'next' => $next],
+                [...$types, 'id' => ParameterType::STRING, 'current' => ParameterType::INTEGER, 'next' => ParameterType::INTEGER],
+            );
+
+            if ($affected >= 1) {
+                $this->forgetCachedCopy($id);
+
+                return $next;
+            }
+
+            if ($this->generationOf($id) === $current) {
+                // The row has not moved, so it was the transition's own
+                // conditions that refused it. Trying again would only ask the
+                // same question of the same row.
+                return null;
+            }
         }
 
-        $this->forgetCachedCopy($id);
+        return null;
+    }
 
-        return true;
+    /** The generation the row carries right now, read past any loaded copy. */
+    private function generationOf(UuidValue $id): ?int
+    {
+        $value = $this->em->getConnection()->fetchOne(
+            'SELECT run_generation FROM video_tasks WHERE id = :id',
+            ['id' => $id->value],
+            ['id' => ParameterType::STRING],
+        );
+
+        return is_numeric($value) ? (int) $value : null;
     }
 
     public function currentStatus(UuidValue $id): ?VideoTaskStatus
@@ -565,6 +653,7 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
             $e->callbackUrl,
             null === $e->renderOptions ? null : RenderOptions::fromArray($e->renderOptions),
             null === $e->prunedAt ? null : DateTimeValue::fromDateTimeImmutable($e->prunedAt),
+            $e->runGeneration,
         );
     }
 }

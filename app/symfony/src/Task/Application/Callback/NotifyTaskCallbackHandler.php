@@ -57,10 +57,6 @@ final readonly class NotifyTaskCallbackHandler
             return;
         }
 
-        // Read before the delivery, which is what makes it this run's: the
-        // task may settle again while the endpoint takes its time.
-        $settledAt = $task->updatedAt();
-
         $summary = VideoTaskSummaryView::fromTask($task, $this->partials->listByTaskId($id), $this->urls->absolute($task->finalVideoUrl()));
 
         try {
@@ -86,7 +82,7 @@ final readonly class NotifyTaskCallbackHandler
                 // Fenced by the run it was reached about, like the mark below:
                 // a task that settled again while this was being refused owes a
                 // notification of its own, which gets its own attempt.
-                $this->tasks->markCallbackAbandoned($id, $message->event, $settledAt, $this->clock->now());
+                $this->tasks->markCallbackAbandoned($id, $message->event, $message->generation, $this->clock->now());
 
                 throw new UnrecoverableMessageHandlingException($e->getMessage(), previous: $e);
             }
@@ -104,9 +100,9 @@ final readonly class NotifyTaskCallbackHandler
         // same, this notification answered for a run whose own never went out,
         // and the sweep - the only thing that would have caught it - was told
         // there was nothing owed. The status is not enough to tell the two
-        // runs apart when both ended the same way; the instant this one
-        // settled is.
-        $marked = $this->tasks->markCallbackNotified($id, $message->event, $settledAt, $this->clock->now());
+        // runs apart when both ended the same way, and neither is the second
+        // in which it settled; the generation the message carries is.
+        $marked = $this->tasks->markCallbackNotified($id, $message->event, $message->generation, $this->clock->now());
 
         $this->logger->info('Callback delivered', [
             'task_id' => $id->value,

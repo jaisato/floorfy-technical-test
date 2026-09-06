@@ -17,6 +17,7 @@ use App\Task\Domain\Exception\TaskNotFound;
 use App\Tests\Support\FixedClock;
 use App\Tests\Support\InMemoryPartialVideoRepository;
 use App\Tests\Support\InMemoryVideoTaskRepository;
+use App\Tests\Support\RecordingLogger;
 use App\Tests\Support\RecordingMessageBus;
 use App\Tests\Support\SpyTransaction;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -29,6 +30,7 @@ final class RetryVideoTaskHandlerTest extends TestCase
     private FixedClock $clock;
     private SpyTransaction $transaction;
     private RecordingMessageBus $bus;
+    private RecordingLogger $logger;
 
     protected function setUp(): void
     {
@@ -37,6 +39,7 @@ final class RetryVideoTaskHandlerTest extends TestCase
         $this->clock = new FixedClock();
         $this->transaction = new SpyTransaction();
         $this->bus = new RecordingMessageBus($this->transaction);
+        $this->logger = new RecordingLogger();
     }
 
     public function testAFailedTaskGoesBackToPendingWithoutItsError(): void
@@ -51,6 +54,27 @@ final class RetryVideoTaskHandlerTest extends TestCase
     }
 
     /**
+     * A broker that refuses the publish does not undo the requeue.
+     *
+     * The rows are committed by then, and RecoverTasks looks for exactly the
+     * row this leaves - pending, untouched - and publishes it again. Answered
+     * 5xx, the caller could never reach a successful answer for an operation
+     * that had succeeded: the task is queued and no longer failed, so the
+     * retry of the request came back 409.
+     */
+    public function testABrokerThatRefusesThePublishStillLeavesTheTaskQueued(): void
+    {
+        $task = $this->failedTask();
+        $this->bus->failure = new \RuntimeException('AMQPIOException: connection refused');
+
+        $this->handler()(new RetryVideoTaskCommand($task->id()->value));
+
+        self::assertSame(VideoTaskStatus::PENDING, $task->status(), 'pending is what the sweep looks for');
+        self::assertNull($task->errorMessage());
+        self::assertStringContainsString('recovery sweep', $this->logger->everythingLogged());
+    }
+
+    /**
      * A task settles once per run and owes the client a notification each time.
      * The delivery mark is one column, and left over from the run before, it
      * told the recovery sweep - which looks for settled tasks whose callback
@@ -60,7 +84,7 @@ final class RetryVideoTaskHandlerTest extends TestCase
     public function testRetryingForgetsThatTheEarlierRunsCallbackWasDelivered(): void
     {
         $task = $this->failedTask();
-        $this->tasks->markCallbackNotified($task->id(), $task->status()->value, $task->updatedAt(), $this->clock->now());
+        $this->tasks->markCallbackNotified($task->id(), $task->status()->value, $task->runGeneration(), $this->clock->now());
 
         $this->handler()(new RetryVideoTaskCommand($task->id()->value));
 
@@ -213,6 +237,6 @@ final class RetryVideoTaskHandlerTest extends TestCase
 
     private function handler(): RetryVideoTaskHandler
     {
-        return new RetryVideoTaskHandler($this->tasks, $this->partials, $this->clock, $this->transaction, $this->bus);
+        return new RetryVideoTaskHandler($this->tasks, $this->partials, $this->clock, $this->transaction, $this->bus, $this->logger);
     }
 }

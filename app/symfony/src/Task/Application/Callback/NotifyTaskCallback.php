@@ -19,6 +19,17 @@ final readonly class NotifyTaskCallback implements AsyncCommand
         public string $taskId,
         /** The status the task reached: completed, failed or canceled. */
         public string $event,
+        /**
+         * Which attempt of the task reached it.
+         *
+         * A status is reusable and so is the second `updated_at` records, so
+         * neither says which run this notification is about. The delivery is
+         * recorded against this number, and a task retried and settled again
+         * while the endpoint took its time carries a different one - so the
+         * late delivery of the previous run no longer answers for the one the
+         * client is still owed.
+         */
+        public int $generation,
     ) {
     }
 }

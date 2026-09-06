@@ -740,7 +740,19 @@ registrada en `callback_notified_at` y deja de aparecer. Reintentar la tarea bor
 ambas marcas:
 la ejecución nueva vuelve a terminar y debe su propia notificación, y con la
 marca de la anterior puesta ésa sería la única que este comando no podría
-recuperar nunca. La ventana importa: una tarea
+recuperar nunca.
+
+Qué ejecución es cada cosa lo dice `run_generation`, un contador que avanza en
+cada escritura que empieza una ejecución (la reclamación del worker) o la
+termina. El estado no sirve —dos ejecuciones de una tarea pueden acabar igual— y
+`updated_at` tampoco: es un `DATETIME`, y cancelar, reintentar y volver a
+cancelar sin que ningún worker llegue a reclamarla deja las dos dentro del mismo
+segundo. El worker lleva el número que le dio su reclamación y cada escritura
+suya lo devuelve, así que un intento al que le quitaron la tarea no puede
+renovar, soltar ni completar la ejecución de otro; y la entrega de una
+notificación se registra contra el número de la transición que la produjo, así
+que la entrega tardía de una ejecución anterior no responde por la que el
+cliente sigue esperando. La ventana importa: una tarea
 publicada hace un segundo no está atascada, es nueva, y reencolarla sólo pondría
 a dos workers a competir por una reclamación que uno va a perder. En un
 despliegue sano este comando no encuentra nada, que es también la forma de saber

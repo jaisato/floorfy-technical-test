@@ -41,17 +41,27 @@ interface VideoTaskRepository
      * for ever and never be picked up again, so a claim older than the lease is
      * treated as abandoned and can be taken over.
      *
-     * @return bool true when the caller now owns the task, false when it must
-     *              leave the task alone
+     * The claim's generation is what the caller then holds: a status says
+     * "somebody is working on this" and is true again of the next worker, so
+     * an attempt whose task was canceled and retried under it saw "processing"
+     * and carried on writing over the replacement run. Every later write of
+     * this attempt's carries the number back, and the row only accepts it
+     * while it is still the same attempt.
+     *
+     * @return int|null the generation this claim produced, or null when the
+     *                  caller must leave the task alone
      */
-    public function claimForProcessing(UuidValue $id, DateTimeValue $now, DateTimeValue $staleBefore): bool;
+    public function claimForProcessing(UuidValue $id, DateTimeValue $now, DateTimeValue $staleBefore): ?int;
 
     /**
      * Hands a claimed task back so the next delivery of the message can retry it.
      *
-     * @return bool true when a claim was actually released
+     * @param int $generation the number claimForProcessing() returned
+     *
+     * @return bool true when a claim was actually released; false when this
+     *              attempt no longer holds it and has nothing to hand back
      */
-    public function release(UuidValue $id, DateTimeValue $now): bool;
+    public function release(UuidValue $id, int $generation, DateTimeValue $now): bool;
 
     /**
      * Says "still working on it" and pushes the claim's deadline forward.
@@ -64,11 +74,15 @@ interface VideoTaskRepository
      * parts, the deadline means "no progress since", which is the thing the
      * lease was ever meant to detect.
      *
+     * @param int $generation the number claimForProcessing() returned
+     *
      * @return bool false when the claim is gone: the task was canceled, or it
-     *              had been declared abandoned and taken by somebody else. The
-     *              caller must stop either way.
+     *              had been declared abandoned and taken by somebody else - by
+     *              status or by generation, and the second is what catches a
+     *              task that was canceled, retried and claimed again while this
+     *              attempt was inside ffmpeg. The caller must stop either way.
      */
-    public function renewLease(UuidValue $id, DateTimeValue $now): bool;
+    public function renewLease(UuidValue $id, int $generation, DateTimeValue $now): bool;
 
     /**
      * Writes the finished video, but only over a task this worker still holds.
@@ -78,9 +92,13 @@ interface VideoTaskRepository
      * canceled and then, a moment later, that it completed. As one conditional
      * UPDATE the cancellation wins, which is what the client was promised.
      *
-     * @return bool false when the row was no longer "processing"
+     * @param int $generation the number claimForProcessing() returned
+     *
+     * @return int|null the generation the completed task now carries, which is
+     *                  what its notification is recorded against; null when the
+     *                  row was no longer this attempt's to finish
      */
-    public function complete(UuidValue $id, string $finalVideoUrl, DateTimeValue $now): bool;
+    public function complete(UuidValue $id, string $finalVideoUrl, int $generation, DateTimeValue $now): ?int;
 
     /**
      * Tasks nothing is working on and nothing will: still pending, untouched
@@ -138,12 +156,16 @@ interface VideoTaskRepository
      * retried was published afresh by every run, so the client got the same
      * POST several times over.
      *
-     * @param DateTimeValue $before the sweep's cutoff: an attempt older than
-     *                              this is stale and may be claimed again
+     * @param int           $generation the run the listing read, so a task
+     *                                  retried and settled again in between
+     *                                  cannot be claimed for the old one
+     * @param DateTimeValue $before     the sweep's cutoff: an attempt older
+     *                                  than this is stale and may be claimed
+     *                                  again
      *
      * @return bool true when this caller took it
      */
-    public function claimCallbackNotification(UuidValue $id, DateTimeValue $before, DateTimeValue $now): bool;
+    public function claimCallbackNotification(UuidValue $id, int $generation, DateTimeValue $before, DateTimeValue $now): bool;
 
     /**
      * Records that the callback for a task was delivered, so the sweep above
@@ -158,17 +180,19 @@ interface VideoTaskRepository
      *
      * The status alone does not identify the run - two runs of one task can
      * both end `failed`, and the first one's late delivery was then accepted
-     * for the second - so the instant that run settled is part of the
-     * condition. Every terminal transition writes it, and neither this mark
-     * nor the sweep's claim touches it afterwards.
+     * for the second - and neither does the instant it settled, which is a
+     * MySQL DATETIME: cancel, retry and cancel again with no worker in between
+     * puts both runs in the same second. The generation does: every transition
+     * that starts or ends a run moves it on, so the number a notification
+     * carries names one of them.
      *
-     * @param string        $event     the status the delivered notification announced
-     * @param DateTimeValue $settledAt the task's updatedAt when the notification was read
+     * @param string $event      the status the delivered notification announced
+     * @param int    $generation the task's generation when the notification was read
      *
      * @return bool false when the task no longer stands there, so the mark was
      *              not written and the notification this run owes is still owed
      */
-    public function markCallbackNotified(UuidValue $id, string $event, DateTimeValue $settledAt, DateTimeValue $now): bool;
+    public function markCallbackNotified(UuidValue $id, string $event, int $generation, DateTimeValue $now): bool;
 
     /**
      * Records that this task's notification will not be delivered, so the sweep
@@ -187,13 +211,13 @@ interface VideoTaskRepository
      * settled again while the delivery was being refused owes a fresh
      * notification, and this verdict is not that run's.
      *
-     * @param string        $event     the status the refused notification announced
-     * @param DateTimeValue $settledAt the task's updatedAt when the notification was read
+     * @param string $event      the status the refused notification announced
+     * @param int    $generation the task's generation when the notification was read
      *
      * @return bool false when the task no longer stands there, so nothing was
      *              written and the notification that run owes is still owed
      */
-    public function markCallbackAbandoned(UuidValue $id, string $event, DateTimeValue $settledAt, DateTimeValue $now): bool;
+    public function markCallbackAbandoned(UuidValue $id, string $event, int $generation, DateTimeValue $now): bool;
 
     /**
      * Forgets that a callback was ever delivered for this task.
@@ -222,9 +246,11 @@ interface VideoTaskRepository
      * earlier, be overwritten with "canceled" - a video that exists, reported
      * as abandoned.
      *
-     * @return bool false when the row was no longer pending or processing
+     * @return int|null the generation the canceled task now carries, which is
+     *                  what its notification is recorded against; null when the
+     *                  row was no longer pending or processing
      */
-    public function cancel(UuidValue $id, DateTimeValue $now): bool;
+    public function cancel(UuidValue $id, DateTimeValue $now): ?int;
 
     /**
      * Writes the terminal failure, but only over a task that is still pending
@@ -235,9 +261,11 @@ interface VideoTaskRepository
      * the DELETE had already answered success, the row said failed, and the
      * client was told both. Whoever's UPDATE lands first decides.
      *
-     * @return bool false when the row was no longer pending or processing
+     * @return int|null the generation the failed task now carries, which is
+     *                  what its notification is recorded against; null when the
+     *                  row was no longer pending or processing
      */
-    public function markFailedIfStillRunning(UuidValue $id, string $errorMessage, DateTimeValue $now): bool;
+    public function markFailedIfStillRunning(UuidValue $id, string $errorMessage, DateTimeValue $now): ?int;
 
     /**
      * The status the row has right now, read from the database rather than

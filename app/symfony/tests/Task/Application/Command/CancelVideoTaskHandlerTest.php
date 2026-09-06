@@ -14,6 +14,7 @@ use App\Task\Domain\Exception\InvalidTaskTransition;
 use App\Task\Domain\Exception\TaskNotFound;
 use App\Tests\Support\FixedClock;
 use App\Tests\Support\InMemoryVideoTaskRepository;
+use App\Tests\Support\RecordingLogger;
 use App\Tests\Support\RecordingMessageBus;
 use PHPUnit\Framework\TestCase;
 
@@ -121,6 +122,26 @@ final class CancelVideoTaskHandlerTest extends TestCase
         $this->handler()(new CancelVideoTaskCommand($task->id()->value));
     }
 
+    /**
+     * A broker that refuses the notification does not undo the cancellation.
+     *
+     * The UPDATE is committed by then, and RecoverTasks looks for exactly this
+     * row - settled, a callback asked for, none delivered - and publishes it
+     * again. Answered 5xx, as this used to be, the caller could never reach a
+     * successful answer for an operation that had succeeded: the row is
+     * already canceled, so the retry of the DELETE came back 409.
+     */
+    public function testABrokerThatRefusesTheNotificationStillLeavesTheTaskCanceled(): void
+    {
+        $task = VideoTask::create(['images' => []], $this->clock->now(), 'https://client.example/hook');
+        $this->tasks->save($task);
+        $this->bus->failure = new \RuntimeException('AMQPIOException: connection refused');
+
+        $this->handler()(new CancelVideoTaskCommand($task->id()->value));
+
+        self::assertSame(VideoTaskStatus::CANCELED, $this->tasks->currentStatus($task->id()));
+    }
+
     public function testAnUnknownTaskIsNotFound(): void
     {
         $this->expectException(TaskNotFound::class);
@@ -145,6 +166,6 @@ final class CancelVideoTaskHandlerTest extends TestCase
 
     private function handler(): CancelVideoTaskHandler
     {
-        return new CancelVideoTaskHandler($this->tasks, $this->clock, new TaskCallbacks($this->bus));
+        return new CancelVideoTaskHandler($this->tasks, $this->clock, new TaskCallbacks($this->bus), new RecordingLogger());
     }
 }

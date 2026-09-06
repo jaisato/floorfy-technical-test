@@ -72,8 +72,8 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
     {
         $task = $this->storedTask();
 
-        self::assertTrue($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
-        self::assertFalse($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
+        self::assertNotNull($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
+        self::assertNull($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
     }
 
     public function testClaimingWritesTheProcessingStatus(): void
@@ -109,7 +109,7 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
 
     public function testAnUnknownTaskCannotBeClaimed(): void
     {
-        self::assertFalse($this->repository->claimForProcessing(UuidValue::new(), $this->now, $this->staleBefore()));
+        self::assertNull($this->repository->claimForProcessing(UuidValue::new(), $this->now, $this->staleBefore()));
     }
 
     public function testACompletedTaskCannotBeClaimed(): void
@@ -119,7 +119,7 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
         $task->markCompleted('http://localhost/videos/final.mp4', $this->now);
         $this->repository->save($task);
 
-        self::assertFalse($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
+        self::assertNull($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
     }
 
     /** So that `messenger:failed:retry` is not a no-op. */
@@ -129,7 +129,7 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
         $task->markFailed('boom', $this->now);
         $this->repository->save($task);
 
-        self::assertTrue($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
+        self::assertNotNull($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
     }
 
     /**
@@ -150,7 +150,7 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
         $this->repository->save($task);
         $this->entityManager->clear();
 
-        self::assertTrue($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
+        self::assertNotNull($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
         $this->entityManager->clear();
 
         $loaded = $this->repository->get($task->id());
@@ -199,13 +199,13 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
         // Ten minutes into a one-hour lease: the task still belongs to whoever
         // took it.
         $soon = $this->now->minusSeconds(-600);
-        self::assertFalse(
+        self::assertNull(
             $this->repository->claimForProcessing($task->id(), $soon, $soon->minusSeconds(3600)),
         );
 
         // Two hours in, with the same lease: the claim is abandoned.
         $muchLater = $this->now->minusSeconds(-7200);
-        self::assertTrue(
+        self::assertNotNull(
             $this->repository->claimForProcessing($task->id(), $muchLater, $muchLater->minusSeconds(3600)),
         );
     }
@@ -213,17 +213,57 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
     public function testReleasingMakesTheTaskClaimableAgain(): void
     {
         $task = $this->storedTask();
-        $this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore());
+        $claim = $this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore());
 
-        self::assertTrue($this->repository->release($task->id(), $this->now));
-        self::assertTrue($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
+        self::assertNotNull($claim);
+        self::assertTrue($this->repository->release($task->id(), $claim, $this->now));
+        self::assertNotNull($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
     }
 
     public function testReleasingATaskNobodyClaimedChangesNothing(): void
     {
         $task = $this->storedTask();
 
-        self::assertFalse($this->repository->release($task->id(), $this->now));
+        self::assertFalse($this->repository->release($task->id(), VideoTask::FIRST_RUN, $this->now));
+    }
+
+    /**
+     * The claim the attempt is holding, not just "somebody is processing this".
+     *
+     * Cancel a task while its worker is inside ffmpeg and retry it, and the
+     * replacement worker puts the row back to processing: with a status-only
+     * condition the old attempt's next renewal matched again, and it went on
+     * to release or complete a run that was not its own while both wrote the
+     * same staging files.
+     */
+    public function testAnAttemptThatLostItsClaimCanNeitherRenewNorReleaseNorComplete(): void
+    {
+        $task = $this->storedTask();
+        $first = $this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore());
+        self::assertNotNull($first);
+
+        // Canceled, retried and claimed again while the first attempt is busy.
+        self::assertNotNull($this->repository->cancel($task->id(), $this->now));
+        $task->cancel($this->now);
+        $task->retry($this->now);
+        $this->repository->save($task);
+        $second = $this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore());
+
+        self::assertNotNull($second);
+        self::assertNotSame($first, $second, 'a claim is a number, and each one is its own');
+
+        self::assertFalse($this->repository->renewLease($task->id(), $first, $this->now));
+        self::assertFalse($this->repository->release($task->id(), $first, $this->now));
+        self::assertNull($this->repository->complete($task->id(), '/videos/final.mp4', $first, $this->now));
+
+        self::assertSame(
+            VideoTaskStatus::PROCESSING,
+            $this->repository->currentStatus($task->id()),
+            'and the run that does hold the claim is untouched',
+        );
+
+        self::assertTrue($this->repository->renewLease($task->id(), $second, $this->now));
+        self::assertNotNull($this->repository->complete($task->id(), '/videos/final.mp4', $second, $this->now));
     }
 
     public function testCancelingWritesTheStatusOverAPendingOrProcessingTask(): void
@@ -232,8 +272,8 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
         $processing = $this->storedTask();
         $this->repository->claimForProcessing($processing->id(), $this->now, $this->staleBefore());
 
-        self::assertTrue($this->repository->cancel($pending->id(), $this->now));
-        self::assertTrue($this->repository->cancel($processing->id(), $this->now));
+        self::assertNotNull($this->repository->cancel($pending->id(), $this->now));
+        self::assertNotNull($this->repository->cancel($processing->id(), $this->now));
         $this->entityManager->clear();
 
         self::assertSame(VideoTaskStatus::CANCELED, $this->repository->get($pending->id())?->status());
@@ -251,12 +291,12 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
         $task->markCompleted('http://localhost/videos/final.mp4', $this->now);
         $this->repository->save($task);
 
-        self::assertFalse($this->repository->cancel($task->id(), $this->now));
-        self::assertFalse($this->repository->cancel(UuidValue::new(), $this->now));
+        self::assertNull($this->repository->cancel($task->id(), $this->now));
+        self::assertNull($this->repository->cancel(UuidValue::new(), $this->now));
 
         $canceled = $this->storedTask();
-        self::assertTrue($this->repository->cancel($canceled->id(), $this->now));
-        self::assertFalse($this->repository->cancel($canceled->id(), $this->now), 'a second cancellation finds nothing to cancel');
+        self::assertNotNull($this->repository->cancel($canceled->id(), $this->now));
+        self::assertNull($this->repository->cancel($canceled->id(), $this->now), 'a second cancellation finds nothing to cancel');
     }
 
     public function testACanceledTaskCannotBeClaimed(): void
@@ -264,7 +304,7 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
         $task = $this->storedTask();
         $this->repository->cancel($task->id(), $this->now);
 
-        self::assertFalse($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
+        self::assertNull($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
     }
 
     /**
@@ -291,7 +331,7 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
     {
         $task = $this->storedTask();
 
-        self::assertTrue($this->repository->markCallbackNotified($task->id(), $task->status()->value, $task->updatedAt(), $this->now));
+        self::assertTrue($this->repository->markCallbackNotified($task->id(), $task->status()->value, $task->runGeneration(), $this->now));
         self::assertNotNull($this->connection()->fetchOne('SELECT callback_notified_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
 
         $this->repository->clearCallbackNotification($task->id());
@@ -309,8 +349,8 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
         $delivered = $this->storedTaskAwaitingCallback();
         $abandoned = $this->storedTaskAwaitingCallback();
 
-        $this->repository->markCallbackNotified($delivered->id(), $delivered->status()->value, $delivered->updatedAt(), $this->now);
-        $this->repository->markCallbackAbandoned($abandoned->id(), $abandoned->status()->value, $abandoned->updatedAt(), $this->now);
+        $this->repository->markCallbackNotified($delivered->id(), $delivered->status()->value, $delivered->runGeneration(), $this->now);
+        $this->repository->markCallbackAbandoned($abandoned->id(), $abandoned->status()->value, $abandoned->runGeneration(), $this->now);
         $this->entityManager->clear();
 
         $listed = array_map(
@@ -349,7 +389,7 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
         $this->repository->save($task);
 
         self::assertFalse(
-            $this->repository->claimCallbackNotification($task->id(), $cutoff, $this->now),
+            $this->repository->claimCallbackNotification($task->id(), $task->runGeneration(), $cutoff, $this->now),
             'the run the notification was listed for is not the run there now',
         );
         self::assertNull($this->connection()->fetchOne('SELECT callback_attempted_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
@@ -363,7 +403,7 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
         $task->markCompleted('/videos/final.mp4', $this->now);
         $this->repository->save($task);
 
-        self::assertFalse($this->repository->claimCallbackNotification($task->id(), $this->now->minusSeconds(-60), $this->now));
+        self::assertFalse($this->repository->claimCallbackNotification($task->id(), $task->runGeneration(), $this->now->minusSeconds(-60), $this->now));
     }
 
     /**
@@ -376,11 +416,11 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
     {
         $task = $this->storedTask();
 
-        self::assertTrue($this->repository->markCallbackAbandoned($task->id(), $task->status()->value, $task->updatedAt(), $this->now));
+        self::assertTrue($this->repository->markCallbackAbandoned($task->id(), $task->status()->value, $task->runGeneration(), $this->now));
         self::assertNotNull($this->connection()->fetchOne('SELECT callback_abandoned_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
 
         // And while it stands, the sweep cannot take the notification.
-        self::assertFalse($this->repository->claimCallbackNotification($task->id(), $this->now, $this->now));
+        self::assertFalse($this->repository->claimCallbackNotification($task->id(), $task->runGeneration(), $this->now, $this->now));
 
         $this->repository->clearCallbackNotification($task->id());
         self::assertNull($this->connection()->fetchOne('SELECT callback_abandoned_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
@@ -391,32 +431,37 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
      * which of them a delivery was announcing. Run A ends failed and its
      * delivery is slow; a retry runs B, which fails too; A's mark was then
      * accepted for B, and when B's own notification was lost the sweep found
-     * callback_notified_at set and never offered the task again. The instant
-     * the run settled is what tells them apart.
+     * callback_notified_at set and never offered the task again.
+     *
+     * The instant the run settled cannot tell them apart either: `updated_at`
+     * is a MySQL DATETIME, and cancel, retry and cancel again with no worker in
+     * between puts both runs in the same second - which is what both runs here
+     * do, at one fixed clock. The generation is what names the run.
      */
-    public function testAMarkFromAnEarlierRunIsRefusedEvenWhenBothEndedTheSameWay(): void
+    public function testAMarkFromAnEarlierRunIsRefusedEvenWhenBothEndedInTheSameSecond(): void
     {
         $task = $this->storedTask();
-        $task->markProcessing($this->now);
-        $task->markFailed('first', $this->now);
-        $this->repository->save($task);
-        $runA = $task->updatedAt();
 
-        // The retry, and a second failure a minute later.
-        $later = $this->now->minusSeconds(-60);
-        $task->retry($later);
-        $task->markProcessing($later);
-        $task->markFailed('second', $later);
+        $runA = $this->repository->cancel($task->id(), $this->now);
+        self::assertNotNull($runA);
+
+        // Retried and canceled again, at the very same instant.
+        $task->cancel($this->now);
+        $task->retry($this->now);
         $this->repository->save($task);
+        $runB = $this->repository->cancel($task->id(), $this->now);
+
+        self::assertNotNull($runB);
+        self::assertNotSame($runA, $runB, 'two runs, one second');
 
         self::assertFalse(
-            $this->repository->markCallbackNotified($task->id(), VideoTaskStatus::FAILED->value, $runA, $this->now),
+            $this->repository->markCallbackNotified($task->id(), VideoTaskStatus::CANCELED->value, $runA, $this->now),
             "the first run's late delivery does not answer for the second",
         );
         self::assertNull($this->connection()->fetchOne('SELECT callback_notified_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
 
         self::assertTrue(
-            $this->repository->markCallbackNotified($task->id(), VideoTaskStatus::FAILED->value, $task->updatedAt(), $this->now),
+            $this->repository->markCallbackNotified($task->id(), VideoTaskStatus::CANCELED->value, $runB, $this->now),
             'the run that is actually settled there still marks',
         );
     }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Task\Application\Command;
 
 use App\Shared\Application\Clock\Clock;
+use App\Shared\Application\Redaction\Urls;
 use App\Shared\Application\Transaction\Transaction;
 use App\Shared\Domain\ValueObject\DateTimeValue;
 use App\Shared\Domain\ValueObject\UuidValue;
@@ -12,6 +13,8 @@ use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\Exception\TaskNotFound;
 use App\Task\Domain\Port\PartialVideoRepository;
 use App\Task\Domain\Port\VideoTaskRepository;
+use Psr\Log\LoggerInterface;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Messenger\MessageBusInterface;
 
@@ -36,6 +39,8 @@ final readonly class RetryVideoTaskHandler
         private Clock $clock,
         private Transaction $transaction,
         private MessageBusInterface $commandBus,
+        #[Autowire(service: 'monolog.logger.task')]
+        private LoggerInterface $logger,
     ) {
     }
 
@@ -68,7 +73,25 @@ final readonly class RetryVideoTaskHandler
             $this->requeue($task, $now);
         });
 
-        $this->commandBus->dispatch(new ProcessVideoTaskCommand($id->value));
+        // Published only once the rows are committed, and a publish that fails
+        // here is not this request's failure - exactly as it is not for a task
+        // being created. RecoverTasks looks for the row this leaves behind
+        // (pending, untouched since the cutoff) and publishes it again.
+        //
+        // Answered 5xx, the caller was worse off than with the crash the sweep
+        // already covers: the task is queued and no longer failed or canceled,
+        // so the retry of the request that reported the error came back 409 and
+        // the client had no way to reach a successful answer for an operation
+        // that had succeeded.
+        try {
+            $this->commandBus->dispatch(new ProcessVideoTaskCommand($id->value));
+        } catch (\Throwable $e) {
+            $this->logger->error('Task queued for another run but not published; the recovery sweep will publish it', [
+                'task_id' => $id->value,
+                'error' => Urls::scrub($e->getMessage()),
+                'cause' => get_debug_type($e),
+            ]);
+        }
     }
 
     private function requeue(VideoTask $task, DateTimeValue $now): void
