@@ -7,8 +7,11 @@ namespace App\Ui\Http\Controller;
 use App\Task\Application\Command\CreateVideoTaskCommand;
 use App\Task\Application\DTO\VideoTaskView;
 use App\Task\Application\Query\GetVideoTaskQuery;
+use App\Task\Application\ReadModel\TaskPage;
 use App\Ui\Http\Request\CreateTaskRequest;
+use App\Ui\Http\Request\ListTasksRequest;
 use App\Ui\Http\Response\ApiProblem;
+use App\Ui\Http\Response\PageResponse;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -44,7 +47,7 @@ final readonly class TaskController
         $violations = $this->validator->validate($dto);
 
         if (\count($violations) > 0) {
-            return self::validationFailed($violations);
+            return self::validationFailed($violations, 'images');
         }
 
         // The command carries what was validated, not the body that arrived:
@@ -60,6 +63,25 @@ final readonly class TaskController
         }
 
         return new JsonResponse(['task_id' => $taskId, 'status' => 'pending'], Response::HTTP_CREATED);
+    }
+
+    #[Route('', name: 'api_tasks_list', methods: ['GET'])]
+    public function list(Request $request): JsonResponse
+    {
+        $dto = ListTasksRequest::fromQuery($request->query->all());
+        $violations = $this->validator->validate($dto);
+
+        if (\count($violations) > 0) {
+            return self::validationFailed($violations, 'query');
+        }
+
+        $page = $this->queryBus->dispatch($dto->toQuery())->last(HandledStamp::class)?->getResult();
+
+        if (!$page instanceof TaskPage) {
+            return ApiProblem::response(Response::HTTP_INTERNAL_SERVER_ERROR, 'No se pudo obtener el listado de tareas.');
+        }
+
+        return PageResponse::serve($request, $page);
     }
 
     #[Route('/{id}', name: 'api_tasks_get', requirements: ['id' => Requirement::UUID], methods: ['GET'])]
@@ -102,13 +124,17 @@ final readonly class TaskController
         return ApiProblem::response(Response::HTTP_NOT_FOUND, 'No existe ninguna tarea con ese identificador.');
     }
 
-    private static function validationFailed(ConstraintViolationListInterface $violations): JsonResponse
+    /**
+     * @param string $rootField the field a violation of the object as a whole
+     *                          is reported under
+     */
+    private static function validationFailed(ConstraintViolationListInterface $violations, string $rootField): JsonResponse
     {
         $errors = [];
 
         foreach ($violations as $violation) {
             $field = (string) $violation->getPropertyPath();
-            $errors['' === $field ? 'images' : $field][] = (string) $violation->getMessage();
+            $errors['' === $field ? $rootField : $field][] = (string) $violation->getMessage();
         }
 
         return ApiProblem::response(

@@ -255,7 +255,7 @@ final class TaskControllerTest extends ApiTestCase
     /** @return iterable<string, array{string, string}> */
     public static function wrongMethods(): iterable
     {
-        yield 'GET on the collection' => ['GET', '/api/tasks'];
+        yield 'PATCH on the collection' => ['PATCH', '/api/tasks'];
         yield 'DELETE on the collection' => ['DELETE', '/api/tasks'];
         yield 'POST on one task' => ['POST', '/api/tasks/0195c6a0-1c37-7000-8000-0000000000ff'];
         yield 'PUT on the final video' => ['PUT', '/api/tasks/0195c6a0-1c37-7000-8000-0000000000ff/final'];
