@@ -10,6 +10,13 @@ namespace App\Task\Application\Callback;
  * Whether it is worth retrying is part of the failure: a server that answered
  * 503 may answer 200 in a minute, while a URL the guard refuses will be refused
  * every time and must not spend the retries.
+ *
+ * The message names the endpoint with its credentials taken out. A callback URL
+ * is a client's, and carrying a token in the userinfo or a query parameter is
+ * the ordinary way to write one; the message goes to the application log and,
+ * once the retries are spent, into the failure transport, where it is readable
+ * by anyone who operates either. The task id is logged as its own field, so
+ * nothing is lost by dropping the query.
  */
 final class CallbackDeliveryFailed extends \RuntimeException
 {
@@ -35,11 +42,38 @@ final class CallbackDeliveryFailed extends \RuntimeException
 
     public static function status(string $url, int $status): self
     {
-        return new self(\sprintf('El endpoint %s respondió HTTP %d.', $url, $status), false);
+        return new self(\sprintf('El endpoint %s respondió HTTP %d.', self::redact($url), $status), false);
     }
 
     public static function unreachable(string $url, \Throwable $cause): self
     {
-        return new self(\sprintf('No se pudo entregar la notificación a %s: %s', $url, $cause->getMessage()), false, $cause);
+        return new self(\sprintf('No se pudo entregar la notificación a %s: %s', self::redact($url), $cause->getMessage()), false, $cause);
+    }
+
+    /**
+     * The endpoint without anything that could be a credential: scheme, host,
+     * port and path, which is what identifies it in a log.
+     *
+     * The query goes whole rather than by parameter name: `?token=`, `?key=`,
+     * `?sig=` and whatever the next receiver calls it are not a list this can
+     * keep up with, and a query that is only `?taskId=` is already in the log
+     * line beside this one. A URL that will not parse is reported as such
+     * instead of echoed.
+     */
+    private static function redact(string $url): string
+    {
+        $parts = parse_url($url);
+
+        if (false === $parts || !isset($parts['host'])) {
+            return '(URL ilegible)';
+        }
+
+        return \sprintf(
+            '%s%s%s%s',
+            isset($parts['scheme']) ? $parts['scheme'].'://' : '',
+            $parts['host'],
+            isset($parts['port']) ? ':'.$parts['port'] : '',
+            $parts['path'] ?? '',
+        ).(isset($parts['query']) ? '?…' : '');
     }
 }
