@@ -23,6 +23,8 @@ x-app-environment: &app-environment
   # How long a claimed task may stay "processing" before another worker may take
   # it over. Only reached when a worker is killed mid-task.
   TASK_LEASE_SECONDS: ${TASK_LEASE_SECONDS:-3600}
+  # How long an Idempotency-Key sent with POST /api/tasks is remembered.
+  IDEMPOTENCY_TTL_SECONDS: ${IDEMPOTENCY_TTL_SECONDS:-86400}
 
 services:
   nginx:

@@ -18,3 +18,9 @@ doctrine:
                         dir: '%kernel.project_dir%/src/Task/Infrastructure/Persistence/Doctrine/Entity'
                         prefix: 'App\Task\Infrastructure\Persistence\Doctrine\Entity'
                         alias: Task
+                    Shared:
+                        is_bundle: false
+                        type: attribute
+                        dir: '%kernel.project_dir%/src/Shared/Infrastructure/Persistence/Doctrine/Entity'
+                        prefix: 'App\Shared\Infrastructure\Persistence\Doctrine\Entity'
+                        alias: Shared

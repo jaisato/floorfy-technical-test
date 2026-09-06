@@ -95,5 +95,6 @@ abstract class ApiTestCase extends WebTestCase
         // Children first: partial_videos has a foreign key onto video_tasks.
         $connection->executeStatement('DELETE FROM partial_videos');
         $connection->executeStatement('DELETE FROM video_tasks');
+        $connection->executeStatement('DELETE FROM idempotency_keys');
     }
 }
