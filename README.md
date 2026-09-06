@@ -159,7 +159,11 @@ Puntos que merece la pena conocer:
 {
   "task_id": "0195…",
   "status": "processing",
+  "progress": { "completed": 1, "failed": 0, "pending": 1, "total": 2, "percent": 50 },
+  "final_video_url": null,
   "error": null,
+  "created_at": "2026-01-02T03:04:05+00:00",
+  "updated_at": "2026-01-02T03:04:09+00:00",
   "partial_videos": [
     {
       "id": "0195…",
@@ -175,6 +179,10 @@ Puntos que merece la pena conocer:
 
 Estados — tarea: `pending | processing | completed | failed`; parte:
 `pending | completed | failed`.
+
+`progress` cuenta las partes: `percent` es la proporción de partes completadas,
+truncada, así que no llega a `100` mientras quede alguna pendiente o fallida.
+Las fechas van siempre en UTC (ISO 8601).
 
 ### `GET /api/tasks/{id}/final`
 

@@ -71,12 +71,7 @@ final readonly class TaskController
             return self::notFound();
         }
 
-        return new JsonResponse([
-            'task_id' => $view->taskId,
-            'status' => $view->status,
-            'error' => $view->error,
-            'partial_videos' => $view->partialVideosAsArray(),
-        ]);
+        return new JsonResponse($view->toArray());
     }
 
     #[Route('/{id}/final', name: 'api_tasks_final', requirements: ['id' => Requirement::UUID], methods: ['GET'])]
@@ -89,9 +84,9 @@ final readonly class TaskController
         }
 
         return new JsonResponse([
-            'task_id' => $view->taskId,
-            'status' => $view->status,
-            'final_video_url' => $view->finalVideoUrl,
+            'task_id' => $view->summary->taskId,
+            'status' => $view->summary->status,
+            'final_video_url' => $view->summary->finalVideoUrl,
         ]);
     }
 
