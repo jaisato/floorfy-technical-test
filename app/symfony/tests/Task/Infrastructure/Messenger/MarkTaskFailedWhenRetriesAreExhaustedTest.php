@@ -145,6 +145,32 @@ final class MarkTaskFailedWhenRetriesAreExhaustedTest extends TestCase
         self::assertSame(0, $this->tasks->saves);
     }
 
+    /**
+     * The same cancellation, arriving in the window between reading the task
+     * and writing the failure. Read-then-save flushed the stale aggregate back
+     * as failed: the DELETE had already answered success, the row said failed,
+     * and the client was told both - with a callback for each.
+     */
+    public function testACancellationThatLandsWhileTheFailureIsBeingWrittenWins(): void
+    {
+        $task = VideoTask::create(
+            ['images' => []],
+            DateTimeValue::fromString('2026-01-02T03:04:05+00:00'),
+            'https://client.example/hook',
+        );
+        $this->tasks->save($task);
+        $clock = $this->clock;
+        $this->tasks->beforeMarkFailed = static function () use ($task, $clock): void {
+            $task->cancel($clock->now());
+        };
+
+        $this->listener()($this->failure($task->id()->value, new \RuntimeException('boom')));
+
+        self::assertSame(VideoTaskStatus::CANCELED, $task->status());
+        self::assertNull($task->errorMessage());
+        self::assertSame([], $this->bus->dispatched, 'no failure callback for a task that was canceled');
+    }
+
     public function testAFailureForAnUnknownTaskIsIgnored(): void
     {
         $this->listener()($this->failure('0195c6a0-1c37-7000-8000-0000000000ff', new \RuntimeException('boom')));

@@ -255,6 +255,41 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         return 1 === $affected;
     }
 
+    public function markFailedIfStillRunning(UuidValue $id, string $errorMessage, DateTimeValue $now): bool
+    {
+        $affected = $this->em->getConnection()->executeStatement(
+            <<<'SQL'
+                UPDATE video_tasks
+                   SET status = :failed, error_message = :error, updated_at = :now
+                 WHERE id = :id AND (status = :pending OR status = :processing)
+                SQL,
+            [
+                'failed' => VideoTaskStatus::FAILED->value,
+                'error' => $errorMessage,
+                'pending' => VideoTaskStatus::PENDING->value,
+                'processing' => VideoTaskStatus::PROCESSING->value,
+                'now' => $now->toDateTimeImmutable(),
+                'id' => $id->value,
+            ],
+            [
+                'failed' => ParameterType::STRING,
+                'error' => ParameterType::STRING,
+                'pending' => ParameterType::STRING,
+                'processing' => ParameterType::STRING,
+                'now' => Types::DATETIME_IMMUTABLE,
+                'id' => ParameterType::STRING,
+            ],
+        );
+
+        if ($affected < 1) {
+            return false;
+        }
+
+        $this->forgetCachedCopy($id);
+
+        return true;
+    }
+
     public function cancel(UuidValue $id, DateTimeValue $now): bool
     {
         $affected = $this->em->getConnection()->executeStatement(

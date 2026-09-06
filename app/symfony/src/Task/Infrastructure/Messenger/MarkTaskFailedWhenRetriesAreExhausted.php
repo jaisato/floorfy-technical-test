@@ -9,7 +9,6 @@ use App\Shared\Domain\Exception\ClientSafe;
 use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Application\Callback\TaskCallbacks;
 use App\Task\Application\Command\ProcessVideoTaskCommand;
-use App\Task\Domain\Enum\VideoTaskStatus;
 use App\Task\Domain\Port\VideoTaskRepository;
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
@@ -50,18 +49,22 @@ final readonly class MarkTaskFailedWhenRetriesAreExhausted
             return;
         }
 
-        $task = $this->tasks->get($id);
-
-        // A task that finished on another delivery keeps its result: the
-        // failure being reported is of a message that had nothing left to do.
-        // A canceled one was stopped on purpose, which is not a failure either.
-        if (null === $task || \in_array($task->status(), [VideoTaskStatus::COMPLETED, VideoTaskStatus::CANCELED], true)) {
+        // One conditional UPDATE, not a read followed by a save. A task that
+        // finished on another delivery keeps its result - the failure being
+        // reported is of a message that had nothing left to do - and a
+        // cancellation that commits between the two steps used to be flushed
+        // back as failed: the DELETE had already answered success, and the
+        // client was told the task was canceled and then that it failed, with
+        // a callback for each. Whoever's UPDATE lands first decides.
+        if (!$this->tasks->markFailedIfStillRunning($id, self::reason($event->getThrowable()), $this->clock->now())) {
             return;
         }
 
-        $task->markFailed(self::reason($event->getThrowable()), $this->clock->now());
-        $this->tasks->save($task);
-        $this->callbacks->notify($task);
+        $task = $this->tasks->get($id);
+
+        if (null !== $task) {
+            $this->callbacks->notify($task);
+        }
     }
 
     /**
