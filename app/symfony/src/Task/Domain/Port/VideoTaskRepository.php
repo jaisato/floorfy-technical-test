@@ -171,6 +171,31 @@ interface VideoTaskRepository
     public function markCallbackNotified(UuidValue $id, string $event, DateTimeValue $settledAt, DateTimeValue $now): bool;
 
     /**
+     * Records that this task's notification will not be delivered, so the sweep
+     * stops offering it.
+     *
+     * A delivery failure the transport can retry is a delay; one it cannot is
+     * an outcome. A callback URL the guard refuses is refused every time, and a
+     * deployment with no signing secret cannot sign any notification, so the
+     * handler refuses both outright instead of spending the retries. Nothing
+     * then distinguished that row from one whose publish was lost - settled, a
+     * callback asked for, none delivered - and the sweep published the same
+     * doomed notification a cutoff later, and again, for as long as the task
+     * existed.
+     *
+     * Fenced by the run, exactly like markCallbackNotified(): a task that
+     * settled again while the delivery was being refused owes a fresh
+     * notification, and this verdict is not that run's.
+     *
+     * @param string        $event     the status the refused notification announced
+     * @param DateTimeValue $settledAt the task's updatedAt when the notification was read
+     *
+     * @return bool false when the task no longer stands there, so nothing was
+     *              written and the notification that run owes is still owed
+     */
+    public function markCallbackAbandoned(UuidValue $id, string $event, DateTimeValue $settledAt, DateTimeValue $now): bool;
+
+    /**
      * Forgets that a callback was ever delivered for this task.
      *
      * One timestamp per task, and a task can settle more than once: the run

@@ -96,6 +96,28 @@ final class VideoTask
         $this->updatedAt = $now;
     }
 
+    /**
+     * Drops the pointer to a final video that is no longer on disk, without
+     * saying the task has been pruned.
+     *
+     * For the retention run that deleted some of a task's files and could not
+     * delete the rest. It deliberately does not mark the task: pruned_at is
+     * what takes it out of the sweep, and a task with files still on the volume
+     * is the one the sweep must come back to. But the file this URL named is
+     * gone all the same, and left in place the API went on handing clients a
+     * link to a video the run had just deleted.
+     *
+     * updatedAt is left alone for the same reason as pruned_at: the sweep lists
+     * settled tasks untouched since a cutoff, and moving it would hold this one
+     * back for a whole retention window - the files it could not delete with
+     * it. Nothing about the task's own history changed here; a dead pointer was
+     * taken down.
+     */
+    public function forgetFinalVideo(): void
+    {
+        $this->finalVideoUrl = null;
+    }
+
     public function id(): UuidValue
     {
         return $this->id;

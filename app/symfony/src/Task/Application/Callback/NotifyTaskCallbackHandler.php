@@ -74,6 +74,20 @@ final readonly class NotifyTaskCallbackHandler
             ]);
 
             if ($e->isPermanent()) {
+                // Recorded before the message is refused, and this is the only
+                // place that knows the difference. Not retrying is not the same
+                // as not being owed: the row is left exactly as the recovery
+                // sweep recognises one whose publish was lost - settled, a
+                // callback asked for, none delivered - so it published this
+                // same doomed notification a cutoff later, and again, for the
+                // life of the task. The guard will refuse that URL every time
+                // and an unset signing secret signs nothing.
+                //
+                // Fenced by the run it was reached about, like the mark below:
+                // a task that settled again while this was being refused owes a
+                // notification of its own, which gets its own attempt.
+                $this->tasks->markCallbackAbandoned($id, $message->event, $settledAt, $this->clock->now());
+
                 throw new UnrecoverableMessageHandlingException($e->getMessage(), previous: $e);
             }
 

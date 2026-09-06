@@ -54,6 +54,13 @@ use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
 #[AsMessageHandler(bus: 'messenger.bus.command')]
 final readonly class ProcessVideoTaskHandler
 {
+    /**
+     * On top of the longest ffmpeg run, to cover what happens around it: the
+     * rename that publishes the file, the conditional UPDATE that completes the
+     * task, and the difference between two workers' clocks. See lease().
+     */
+    private const int LEASE_SLACK_SECONDS = 300;
+
     public function __construct(
         private VideoTaskRepository $tasks,
         private PartialVideoRepository $partials,
@@ -67,6 +74,10 @@ final readonly class ProcessVideoTaskHandler
         private string $videosDir,
         #[Autowire(param: 'app.task_lease_seconds')]
         private int $leaseSeconds,
+        #[Autowire(param: 'app.ffmpeg_animate_timeout')]
+        private int $animateTimeoutSeconds,
+        #[Autowire(param: 'app.ffmpeg_compose_timeout')]
+        private int $composeTimeoutSeconds,
         #[Autowire(service: 'monolog.logger.task')]
         private LoggerInterface $logger,
     ) {
@@ -82,7 +93,7 @@ final readonly class ProcessVideoTaskHandler
 
         $now = $this->clock->now();
 
-        if (!$this->tasks->claimForProcessing($taskId, $now, $now->minusSeconds($this->leaseSeconds))) {
+        if (!$this->tasks->claimForProcessing($taskId, $now, $now->minusSeconds($this->lease()))) {
             // Already finished, or in the hands of another worker. Acknowledging
             // is right: retrying would not change the answer.
             $this->logger->info('Task not claimable, skipping', ['task_id' => $taskId->value]);
@@ -177,6 +188,32 @@ final readonly class ProcessVideoTaskHandler
      * another worker has already taken over - and either way this attempt has
      * no business carrying on.
      */
+    /**
+     * How long a claim stands without a renewal before the task counts as
+     * abandoned.
+     *
+     * The renewals happen between parts and never during one - a running ffmpeg
+     * is left to finish its clip, which is what lets a retry reuse it - so the
+     * longest a healthy attempt goes without touching the row is one ffmpeg
+     * run, and the lease has to outlast that or the attempt declares itself
+     * abandoned. Shipped, TASK_LEASE_SECONDS and FFMPEG_COMPOSE_TIMEOUT were
+     * the same hour: a composition that used its whole budget expired the lease
+     * exactly as it finished, and the next delivery of any message for that
+     * task re-rendered everything on top of a worker that was still writing.
+     *
+     * So the configured value is a floor, not the answer: what the claim
+     * actually gets is whichever is longer, and the operator's number decides
+     * how quickly a genuinely dead worker's task comes back - which cannot be
+     * sooner than the longest run they allow, because until then the two look
+     * identical from here.
+     */
+    private function lease(): int
+    {
+        $longestStep = max($this->animateTimeoutSeconds, $this->composeTimeoutSeconds);
+
+        return max($this->leaseSeconds, $longestStep + self::LEASE_SLACK_SECONDS);
+    }
+
     private function keepClaim(VideoTask $task): void
     {
         if ($this->tasks->renewLease($task->id(), $this->clock->now())) {

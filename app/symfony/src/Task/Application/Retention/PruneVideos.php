@@ -41,6 +41,9 @@ final readonly class PruneVideos
      */
     private const string STAGING_DIRECTORY = '.staging';
 
+    /** Names the task's own video among its files; see filesOf(). */
+    private const string FINAL_VIDEO = 'final';
+
     public function __construct(
         private VideoTaskRepository $tasks,
         private PartialVideoRepository $partials,
@@ -121,13 +124,17 @@ final readonly class PruneVideos
 
         $parts = $this->partials->listByTaskId($id);
         $left = [];
+        $gone = [];
         $files = 0;
         $bytes = 0;
 
-        foreach ($this->filesOf($task, $parts) as $file) {
+        foreach ($this->filesOf($task, $parts) as $owner => $file) {
             $size = @filesize($file);
 
             if (false === $size) {
+                // Not there to delete, and equally not there to serve: whatever
+                // still points at it points at nothing.
+                $gone[$owner] = true;
                 continue;
             }
 
@@ -139,6 +146,7 @@ final readonly class PruneVideos
                 continue;
             }
 
+            $gone[$owner] = true;
             ++$files;
             $bytes += $size;
         }
@@ -155,9 +163,14 @@ final readonly class PruneVideos
                 'first' => $left[0],
             ]);
 
-            // The bytes that did go are reported all the same: they are off the
-            // volume, and a report that hid them would understate what the run
-            // freed and overstate what is left to free.
+            // The files that did go are gone whichever way the rest went, and
+            // the task went on naming them: GET /api/tasks/{id} handed the
+            // client a link to a video this very run had deleted, and the
+            // download 404ed against an API that said it was there. Only the
+            // pointers move - not pruned_at, and not updated_at - so the task
+            // is still in the next run's listing with the files it kept.
+            $this->forgetDeleted($task, $parts, $gone);
+
             return new PrunedTask(null, $files, $bytes);
         }
 
@@ -227,23 +240,58 @@ final readonly class PruneVideos
     }
 
     /**
-     * Every file this task owns. Built from the ids rather than from the stored
-     * paths, so a clip whose row lost its path - a retry that never finished -
-     * is still cleaned up.
+     * Every file this task owns, keyed by what names it. Built from the ids
+     * rather than from the stored paths, so a clip whose row lost its path - a
+     * retry that never finished - is still cleaned up.
+     *
+     * The key is how a partial run says which pointers to take down: the id of
+     * the clip's row, or FINAL_VIDEO for the task's own column. Ids are UUIDs,
+     * so that constant cannot be one of them.
      *
      * @param list<PartialVideo> $parts
      *
-     * @return list<string>
+     * @return array<string, string>
      */
     private function filesOf(VideoTask $task, array $parts): array
     {
-        $files = [$this->videosDir.'/final_'.$task->id()->value.'.mp4'];
+        $files = [self::FINAL_VIDEO => $this->videosDir.'/final_'.$task->id()->value.'.mp4'];
 
         foreach ($parts as $part) {
-            $files[] = $this->videosDir.'/partial_'.$part->id()->value.'.mp4';
+            $files[$part->id()->value] = $this->videosDir.'/partial_'.$part->id()->value.'.mp4';
         }
 
         return $files;
+    }
+
+    /**
+     * Takes down the pointers to the files a partial run did delete.
+     *
+     * Not a prune: nothing is marked and updated_at does not move, so the task
+     * stays in the next run's listing with the files that would not go. What
+     * changes is only that the API stops offering a video that is not there.
+     *
+     * @param list<PartialVideo>  $parts
+     * @param array<string, true> $gone  keyed as filesOf() keys its paths
+     */
+    private function forgetDeleted(VideoTask $task, array $parts, array $gone): void
+    {
+        $orphaned = [];
+
+        foreach ($parts as $part) {
+            if (isset($gone[$part->id()->value]) && null !== $part->videoPath()) {
+                $part->forgetVideo();
+                $orphaned[] = $part;
+            }
+        }
+
+        if ([] !== $orphaned) {
+            $this->partials->saveAll($orphaned);
+        }
+
+        if (isset($gone[self::FINAL_VIDEO]) && null !== $task->finalVideoUrl()) {
+            $task->forgetFinalVideo();
+            $this->tasks->save($task);
+        }
     }
 
     /** @param list<PartialVideo> $parts */

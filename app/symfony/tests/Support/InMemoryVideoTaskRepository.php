@@ -29,6 +29,9 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
     /** @var array<string, DateTimeValue> when the sweep last published one */
     public array $callbacksAttempted = [];
 
+    /** @var array<string, DateTimeValue> when each task's callback was given up on */
+    public array $callbacksAbandoned = [];
+
     /**
      * Run just before getForUpdate() hands a row back, so a test can change the
      * task in the moment the caller believes it is holding it still.
@@ -52,6 +55,14 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
      * @var (callable(UuidValue): void)|null
      */
     public $beforeMarkNotified;
+
+    /**
+     * Run just before markCallbackAbandoned() decides, so a test can retry the
+     * task in the window a delivery being refused occupies.
+     *
+     * @var (callable(UuidValue): void)|null
+     */
+    public $beforeMarkAbandoned;
 
     public function save(VideoTask $task): void
     {
@@ -246,9 +257,35 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         return true;
     }
 
+    public function markCallbackAbandoned(UuidValue $id, string $event, DateTimeValue $settledAt, DateTimeValue $now): bool
+    {
+        if (null !== $this->beforeMarkAbandoned) {
+            ($this->beforeMarkAbandoned)($id);
+        }
+
+        $task = $this->tasks[$id->value] ?? null;
+
+        // The same fence the database applies to the delivered mark: this
+        // verdict belongs to the run that reached it.
+        if (null === $task
+            || $task->status()->value !== $event
+            || $task->updatedAt()->toDateTimeImmutable() != $settledAt->toDateTimeImmutable()
+        ) {
+            return false;
+        }
+
+        $this->callbacksAbandoned[$id->value] = $now;
+
+        return true;
+    }
+
     public function clearCallbackNotification(UuidValue $id): void
     {
-        unset($this->callbacksNotified[$id->value], $this->callbacksAttempted[$id->value]);
+        unset(
+            $this->callbacksNotified[$id->value],
+            $this->callbacksAttempted[$id->value],
+            $this->callbacksAbandoned[$id->value],
+        );
     }
 
     public function claimRepublication(UuidValue $id, DateTimeValue $before, DateTimeValue $now): bool
@@ -269,7 +306,7 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
 
     public function claimCallbackNotification(UuidValue $id, DateTimeValue $before, DateTimeValue $now): bool
     {
-        if (isset($this->callbacksNotified[$id->value])) {
+        if (isset($this->callbacksNotified[$id->value]) || isset($this->callbacksAbandoned[$id->value])) {
             return false;
         }
 
@@ -296,6 +333,7 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         return $this->oldestFirst(
             fn (VideoTask $task): bool => null !== $task->callbackUrl()
                 && !isset($this->callbacksNotified[$task->id()->value])
+                && !isset($this->callbacksAbandoned[$task->id()->value])
                 && !$this->attemptedSince($task->id(), $before)
                 && \in_array($task->status(), VideoTaskStatus::settled(), true),
             $before,

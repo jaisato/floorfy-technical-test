@@ -34,6 +34,17 @@ final class ProcessVideoTaskHandlerTest extends TestCase
 {
     private const int LEASE_SECONDS = 3600;
 
+    /** The deployment's shipped ffmpeg budgets, which the lease has to cover. */
+    private const int ANIMATE_TIMEOUT_SECONDS = 600;
+    private const int COMPOSE_TIMEOUT_SECONDS = 3600;
+
+    /**
+     * What a claim actually gets: the longest single ffmpeg run plus the
+     * handler's slack, because the configured lease is only a floor. Shipped,
+     * TASK_LEASE_SECONDS and FFMPEG_COMPOSE_TIMEOUT are the same hour.
+     */
+    private const int EFFECTIVE_LEASE_SECONDS = self::COMPOSE_TIMEOUT_SECONDS + 300;
+
     private InMemoryVideoTaskRepository $tasks;
     private InMemoryPartialVideoRepository $partials;
     private FakeImageFetcher $images;
@@ -169,10 +180,31 @@ final class ProcessVideoTaskHandlerTest extends TestCase
         $task = $this->storedTask(['https://example.com/a.png']);
         $task->markProcessing($this->clock->now());
 
-        $this->clock->advance(self::LEASE_SECONDS + 1);
+        $this->clock->advance(self::EFFECTIVE_LEASE_SECONDS + 1);
         $this->handle($task);
 
         self::assertSame(VideoTaskStatus::COMPLETED, $task->status());
+    }
+
+    /**
+     * The claim is renewed between parts and never during one, so the longest a
+     * healthy attempt goes without touching the row is one ffmpeg run - and the
+     * shipped TASK_LEASE_SECONDS was the same hour as FFMPEG_COMPOSE_TIMEOUT.
+     * A composition that used its whole budget therefore expired its own lease
+     * as it finished, and the next delivery of any message for that task
+     * re-rendered everything over a worker that was still writing the output.
+     * The configured value is a floor; the claim gets whichever is longer.
+     */
+    public function testAnAttemptStillInsideItsComposeBudgetIsNotDeclaredAbandoned(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+        $task->markProcessing($this->clock->now());
+
+        $this->clock->advance(self::COMPOSE_TIMEOUT_SECONDS + 1);
+        $this->handle($task);
+
+        self::assertSame([], $this->images->fetched, 'nothing was rendered a second time');
+        self::assertSame(VideoTaskStatus::PROCESSING, $task->status(), 'the task is still the first attempt\'s');
     }
 
     public function testACompletedTaskIsNotProcessedAgain(): void
@@ -615,6 +647,8 @@ final class ProcessVideoTaskHandlerTest extends TestCase
             self::defaults(),
             $videosDir,
             self::LEASE_SECONDS,
+            self::ANIMATE_TIMEOUT_SECONDS,
+            self::COMPOSE_TIMEOUT_SECONDS,
             $logger ?? new NullLogger(),
         );
     }
