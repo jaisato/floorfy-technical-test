@@ -76,13 +76,18 @@ jobs:
     runs-on: ubuntu-24.04
 
     services:
+      # Credentials for containers that live and die with this job. They are
+      # spelled out rather than shortened to `app` / `root` on purpose: a bare
+      # token next to a key named *_PASSWORD, or inside a user:pass@host DSN, is
+      # what a leaked credential looks like, and secret scanners report it as
+      # one. A value that says what it is cannot be mistaken for a real one.
       mysql:
         image: mysql:8.0
         env:
-          MYSQL_ROOT_PASSWORD: root-only-for-ci
+          MYSQL_ROOT_PASSWORD: root_ci_password
           MYSQL_DATABASE: app_test
           MYSQL_USER: app
-          MYSQL_PASSWORD: app
+          MYSQL_PASSWORD: app_ci_password
         ports:
           - 3306:3306
         options: >-
@@ -96,7 +101,7 @@ jobs:
         image: rabbitmq:3.13-alpine
         env:
           RABBITMQ_DEFAULT_USER: app
-          RABBITMQ_DEFAULT_PASS: app
+          RABBITMQ_DEFAULT_PASS: app_ci_password
         ports:
           - 5672:5672
         options: >-
@@ -107,10 +112,10 @@ jobs:
           --health-start-period=20s
 
     env:
-      DATABASE_URL: 'mysql://app:app@127.0.0.1:3306/app_test?serverVersion=8.0&charset=utf8mb4'
-      MESSENGER_TRANSPORT_DSN: 'amqp://app:app@127.0.0.1:5672/%2f/messages'
-      MESSENGER_CALLBACKS_TRANSPORT_DSN: 'amqp://app:app@127.0.0.1:5672/%2f/callbacks'
-      MESSENGER_FAILURE_TRANSPORT_DSN: 'amqp://app:app@127.0.0.1:5672/%2f/failed'
+      DATABASE_URL: 'mysql://app:app_ci_password@127.0.0.1:3306/app_test?serverVersion=8.0&charset=utf8mb4'
+      MESSENGER_TRANSPORT_DSN: 'amqp://app:app_ci_password@127.0.0.1:5672/%2f/messages'
+      MESSENGER_CALLBACKS_TRANSPORT_DSN: 'amqp://app:app_ci_password@127.0.0.1:5672/%2f/callbacks'
+      MESSENGER_FAILURE_TRANSPORT_DSN: 'amqp://app:app_ci_password@127.0.0.1:5672/%2f/failed'
 
     steps:
       - uses: actions/checkout@v4
