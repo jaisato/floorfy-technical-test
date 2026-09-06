@@ -354,7 +354,7 @@ exigirla para poder ejecutar la suite.
 ## Tests
 
 ```bash
-make test          # 230 tests, sin necesidad de servicios
+make test          # la suite entera, sin necesidad de servicios
 make test-mysql    # los que dependen de MySQL (FKs, anchos de columna)
 make test-ffmpeg   # los que ejecutan FFmpeg de verdad
 ```
