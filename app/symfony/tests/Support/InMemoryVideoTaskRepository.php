@@ -37,6 +37,14 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
      */
     public $beforeLockedRead;
 
+    /**
+     * Run just before markFailedIfStillRunning() decides, so a test can cancel
+     * the task in the window the conditional UPDATE exists to close.
+     *
+     * @var (callable(UuidValue): void)|null
+     */
+    public $beforeMarkFailed;
+
     public function save(VideoTask $task): void
     {
         ++$this->saves;
@@ -96,6 +104,24 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         }
 
         $task->markPending($now);
+
+        return true;
+    }
+
+    /** Mirrors the conditional write: nothing happens over a settled row. */
+    public function markFailedIfStillRunning(UuidValue $id, string $errorMessage, DateTimeValue $now): bool
+    {
+        if (null !== $this->beforeMarkFailed) {
+            ($this->beforeMarkFailed)($id);
+        }
+
+        $task = $this->tasks[$id->value] ?? null;
+
+        if (null === $task || !\in_array($task->status(), [VideoTaskStatus::PENDING, VideoTaskStatus::PROCESSING], true)) {
+            return false;
+        }
+
+        $task->markFailed($errorMessage, $now);
 
         return true;
     }

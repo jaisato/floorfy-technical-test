@@ -165,6 +165,19 @@ interface VideoTaskRepository
     public function cancel(UuidValue $id, DateTimeValue $now): bool;
 
     /**
+     * Writes the terminal failure, but only over a task that is still pending
+     * or processing.
+     *
+     * The same arbitration as cancel(), from the other side. Read-then-save
+     * let a cancellation that committed in between be flushed back as failed:
+     * the DELETE had already answered success, the row said failed, and the
+     * client was told both. Whoever's UPDATE lands first decides.
+     *
+     * @return bool false when the row was no longer pending or processing
+     */
+    public function markFailedIfStillRunning(UuidValue $id, string $errorMessage, DateTimeValue $now): bool;
+
+    /**
      * The status the row has right now, read from the database rather than
      * from anything already loaded.
      *
