@@ -21,6 +21,11 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
 
     public int $saves = 0;
 
+    public int $leaseRenewals = 0;
+
+    /** @var array<string, DateTimeValue> when each task's callback was delivered */
+    public array $callbacksNotified = [];
+
     public function save(VideoTask $task): void
     {
         ++$this->saves;
@@ -96,6 +101,115 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         $task->cancel($now);
 
         return true;
+    }
+
+    /**
+     * Mirrors the conditional renewal: the deadline only moves for a task this
+     * attempt still holds, so a cancellation - or a takeover, which in memory
+     * shows as the row no longer being "processing" - reports the claim lost.
+     */
+    public function renewLease(UuidValue $id, DateTimeValue $now): bool
+    {
+        $task = $this->tasks[$id->value] ?? null;
+
+        if (null === $task || VideoTaskStatus::PROCESSING !== $task->status()) {
+            return false;
+        }
+
+        ++$this->leaseRenewals;
+        // Only the deadline moves, and processing -> processing is a legal
+        // transition, so the shared instance can carry it: unlike the two
+        // writes below there is nothing here the caller's copy must not see.
+        $task->markProcessing($now);
+
+        return true;
+    }
+
+    public function complete(UuidValue $id, string $finalVideoUrl, DateTimeValue $now): bool
+    {
+        $task = $this->tasks[$id->value] ?? null;
+
+        if (null === $task || VideoTaskStatus::PROCESSING !== $task->status()) {
+            return false;
+        }
+
+        $this->tasks[$id->value] = self::rowWith($task, VideoTaskStatus::COMPLETED, $finalVideoUrl, $now);
+
+        return true;
+    }
+
+    /**
+     * A new instance standing for the row after the conditional UPDATE that
+     * completes a task.
+     *
+     * That write goes straight to SQL in the real adapter, so the aggregate the
+     * caller is holding learns nothing from it - and the caller goes on to
+     * update its own copy. Mutating the shared instance here instead would make
+     * the handler's own `markCompleted()` a second transition out of a state it
+     * had already reached.
+     */
+    private static function rowWith(VideoTask $task, VideoTaskStatus $status, ?string $finalVideoUrl, DateTimeValue $updatedAt): VideoTask
+    {
+        return VideoTask::rehydrate(
+            $task->id(),
+            $task->payload(),
+            $status,
+            $finalVideoUrl,
+            VideoTaskStatus::COMPLETED === $status ? null : $task->errorMessage(),
+            $task->createdAt(),
+            $updatedAt,
+            $task->callbackUrl(),
+            $task->renderOptions(),
+            $task->prunedAt(),
+        );
+    }
+
+    public function markCallbackNotified(UuidValue $id, DateTimeValue $now): void
+    {
+        $this->callbacksNotified[$id->value] = $now;
+    }
+
+    public function listUnclaimedSince(DateTimeValue $before, int $limit): array
+    {
+        return $this->oldestFirst(
+            static fn (VideoTask $task): bool => VideoTaskStatus::PENDING === $task->status(),
+            $before,
+            $limit,
+        );
+    }
+
+    public function listAwaitingCallback(DateTimeValue $before, int $limit): array
+    {
+        return $this->oldestFirst(
+            fn (VideoTask $task): bool => null !== $task->callbackUrl()
+                && !isset($this->callbacksNotified[$task->id()->value])
+                && \in_array($task->status(), VideoTaskStatus::settled(), true),
+            $before,
+            $limit,
+        );
+    }
+
+    /**
+     * @param callable(VideoTask): bool $matches
+     *
+     * @return list<VideoTask>
+     */
+    private function oldestFirst(callable $matches, DateTimeValue $before, int $limit): array
+    {
+        $found = [];
+
+        foreach ($this->tasks as $task) {
+            if ($matches($task) && $task->updatedAt()->toDateTimeImmutable() < $before->toDateTimeImmutable()) {
+                $found[] = $task;
+            }
+        }
+
+        usort(
+            $found,
+            static fn (VideoTask $a, VideoTask $b): int => $a->updatedAt()->toDateTimeImmutable() <=> $b->updatedAt()->toDateTimeImmutable(),
+        );
+
+        return \array_slice($found, 0, $limit);
     }
 
     public function currentStatus(UuidValue $id): ?VideoTaskStatus

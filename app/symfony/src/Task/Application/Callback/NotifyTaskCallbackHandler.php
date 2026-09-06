@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Task\Application\Callback;
 
+use App\Shared\Application\Clock\Clock;
 use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Application\DTO\VideoTaskSummaryView;
 use App\Task\Application\Url\VideoUrls;
@@ -34,6 +35,7 @@ final readonly class NotifyTaskCallbackHandler
         private PartialVideoRepository $partials,
         private CallbackDelivery $delivery,
         private VideoUrls $urls,
+        private Clock $clock,
         #[Autowire(service: 'monolog.logger.task')]
         private LoggerInterface $logger,
     ) {
@@ -73,6 +75,11 @@ final readonly class NotifyTaskCallbackHandler
 
             throw $e;
         }
+
+        // Recorded so the recovery sweep stops offering this task: it looks
+        // for settled tasks that asked for a callback and never got one, which
+        // is how a publish lost between the commit and the broker is found.
+        $this->tasks->markCallbackNotified($id, $this->clock->now());
 
         $this->logger->info('Callback delivered', ['task_id' => $id->value, 'event' => $message->event]);
     }

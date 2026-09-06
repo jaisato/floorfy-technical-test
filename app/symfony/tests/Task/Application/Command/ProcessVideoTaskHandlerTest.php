@@ -430,6 +430,59 @@ final class ProcessVideoTaskHandlerTest extends TestCase
         self::assertSame(['completed', 'pending', 'pending'], $statuses);
     }
 
+    /**
+     * The very last gap: the cancellation arrives while ffmpeg is composing,
+     * after the last boundary check has already passed. Writing "completed"
+     * unconditionally at the end used to erase it, so the client was told the
+     * task was canceled and then, a moment later, that it had completed.
+     */
+    public function testACancellationDuringTheCompositionIsNotOverwritten(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+        $this->composer->onCompose(function () use ($task): void {
+            $this->tasks->cancel($task->id(), $this->clock->now());
+        });
+
+        $this->handle($task);
+
+        self::assertSame(VideoTaskStatus::CANCELED, $this->tasks->currentStatus($task->id()));
+        self::assertNull($this->tasks->get($task->id())?->finalVideoUrl());
+        self::assertSame([], $this->bus->dispatched, 'and nobody is told the task completed');
+    }
+
+    /**
+     * A run has no fixed length, and the lease used to be counted from the
+     * claim: a task with enough parts outlived it while making perfectly good
+     * progress, and a second worker took it over. Every boundary renews it.
+     */
+    public function testTheClaimIsRenewedAsThePartsAreRendered(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png', 'https://example.com/b.png']);
+
+        $this->handle($task);
+
+        // One per part plus one before composing.
+        self::assertSame(3, $this->tasks->leaseRenewals);
+    }
+
+    /** Losing the claim to another worker stops the attempt as a cancellation does. */
+    public function testAnAttemptWhoseClaimWasTakenOverStopsWithoutFinishing(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png', 'https://example.com/b.png']);
+        $this->images->onFetch(function (string $url) use ($task): void {
+            if ('https://example.com/a.png' === $url) {
+                // What a takeover looks like from here: the row is no longer
+                // this attempt's to write.
+                $this->tasks->cancel($task->id(), $this->clock->now());
+            }
+        });
+
+        $this->handle($task);
+
+        self::assertSame(['https://example.com/a.png'], $this->images->fetched);
+        self::assertSame([], $this->composer->calls);
+    }
+
     /** The composition is a boundary too: a task canceled after its last part is not finished. */
     public function testACancellationAfterTheLastPartStopsBeforeComposing(): void
     {

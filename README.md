@@ -686,6 +686,41 @@ En cron, una vez al día:
 0 4 * * * cd /ruta/al/repo && docker compose exec -T php php bin/console app:videos:prune --older-than=30d
 ```
 
+### Recuperación de mensajes perdidos
+
+La fila de una tarea vive en MySQL y su mensaje en RabbitMQ, así que escribir
+una no puede formar parte de confirmar el otro. El mensaje se publica justo
+**después** del commit —nunca antes, que anunciaría una tarea que aún puede
+revertirse—, y un proceso que muera en ese hueco deja una tarea en `pending` que
+ningún worker reclamará, o una tarea terminada cuyo callback nadie entregará.
+
+`app:tasks:recover` busca esas dos cosas y vuelve a publicar su mensaje:
+
+```bash
+docker compose exec php php bin/console app:tasks:recover --stuck-for=10m --dry-run
+docker compose exec php php bin/console app:tasks:recover --stuck-for=10m
+```
+
+| Opción | Valor |
+|---|---|
+| `--stuck-for` | cuánto tiempo sin tocar antes de dar un mensaje por perdido (por defecto `10m`) |
+| `--dry-run` | enumera lo que reencolaría y no publica nada |
+| `--limit` | máximo de tareas de cada tipo por ejecución (100 por defecto) |
+
+Repetirlo es inofensivo: una tarea que ya se está procesando rechaza la
+reclamación, y una notificación ya entregada queda registrada en
+`callback_notified_at` y deja de aparecer. La ventana importa: una tarea
+publicada hace un segundo no está atascada, es nueva, y reencolarla sólo pondría
+a dos workers a competir por una reclamación que uno va a perder. En un
+despliegue sano este comando no encuentra nada, que es también la forma de saber
+si se está perdiendo algo.
+
+En cron, cada pocos minutos:
+
+```cron
+*/5 * * * * cd /ruta/al/repo && docker compose exec -T php php bin/console app:tasks:recover --stuck-for=10m
+```
+
 ### Comandos
 
 ```bash

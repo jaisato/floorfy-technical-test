@@ -55,6 +55,7 @@ final readonly class PruneVideos
 
         foreach ($this->tasks->listPrunable($before, $limit) as $task) {
             $parts = $this->partials->listByTaskId($task->id());
+            $left = [];
 
             foreach ($this->filesOf($task, $parts) as $file) {
                 $size = @filesize($file);
@@ -63,12 +64,31 @@ final readonly class PruneVideos
                     continue;
                 }
 
+                if (!$dryRun && !@unlink($file)) {
+                    // Read-only mount, a permission the deployment lost, a file
+                    // somebody else holds open: whatever it is, the bytes are
+                    // still on disk and counting them as freed would be a lie.
+                    $left[] = $file;
+                    continue;
+                }
+
                 ++$files;
                 $bytes += $size;
+            }
 
-                if (!$dryRun) {
-                    @unlink($file);
-                }
+            if (!$dryRun && [] !== $left) {
+                // Not marked as pruned, on purpose: pruned_at is what stops the
+                // job coming back, and a task whose files are still there is
+                // exactly the one it must come back to. Left unmarked, the next
+                // run tries again; marked, the files would leak for good and
+                // every report would say they had gone.
+                $this->logger->error('Retention could not delete every file of a task', [
+                    'task_id' => $task->id()->value,
+                    'files_left' => \count($left),
+                    'first' => $left[0],
+                ]);
+
+                continue;
             }
 
             if (!$dryRun) {

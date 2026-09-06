@@ -41,6 +41,32 @@ final class TaskRenderOptionsTest extends ApiTestCase
         self::assertSame(1.5, $options->crossfade);
     }
 
+    /**
+     * The constraint on these fields is Type('numeric'), which accepts "6.5"
+     * as readily as 6.5, so a quoted number is a valid request that asked for
+     * 6.5 seconds. It used to be dropped on the way to the domain and the task
+     * rendered with the deployment's default instead: accepted, acknowledged,
+     * and not what the client asked for.
+     */
+    public function testAQuotedNumberIsTheNumberItSays(): void
+    {
+        $taskId = $this->create(['images' => [
+            ['url' => 'https://example.com/a.png', 'transition' => 'pan', 'duration' => '8.5'],
+        ], 'options' => ['duration' => '6.5', 'crossfade' => '0.25']]);
+
+        $options = $this->optionsOf($taskId);
+
+        self::assertSame(6.5, $options->duration);
+        self::assertSame(0.25, $options->crossfade);
+        self::assertSame(
+            [8.5],
+            array_map('floatval', $this->connection()->fetchFirstColumn(
+                'SELECT duration_seconds FROM partial_videos WHERE task_id = ? ORDER BY position',
+                [$taskId],
+            )),
+        );
+    }
+
     /** Anything the request leaves out keeps the default. */
     public function testAPartialSetOfOptionsKeepsTheRest(): void
     {

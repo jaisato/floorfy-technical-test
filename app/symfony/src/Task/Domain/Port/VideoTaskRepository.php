@@ -41,6 +41,68 @@ interface VideoTaskRepository
     public function release(UuidValue $id, DateTimeValue $now): bool;
 
     /**
+     * Says "still working on it" and pushes the claim's deadline forward.
+     *
+     * The lease exists so a task whose worker died is not stuck for ever, and
+     * it was being measured from the moment the claim was taken. A run has no
+     * fixed length, though - twenty images take as long as they take - so a
+     * long but perfectly healthy attempt outlived its own lease and a second
+     * worker took the task off it, rendering everything twice. Renewed between
+     * parts, the deadline means "no progress since", which is the thing the
+     * lease was ever meant to detect.
+     *
+     * @return bool false when the claim is gone: the task was canceled, or it
+     *              had been declared abandoned and taken by somebody else. The
+     *              caller must stop either way.
+     */
+    public function renewLease(UuidValue $id, DateTimeValue $now): bool;
+
+    /**
+     * Writes the finished video, but only over a task this worker still holds.
+     *
+     * Checking for a cancellation and then saving is two steps, and one that
+     * lands in between is simply overwritten: the client is told the task was
+     * canceled and then, a moment later, that it completed. As one conditional
+     * UPDATE the cancellation wins, which is what the client was promised.
+     *
+     * @return bool false when the row was no longer "processing"
+     */
+    public function complete(UuidValue $id, string $finalVideoUrl, DateTimeValue $now): bool;
+
+    /**
+     * Tasks nothing is working on and nothing will: still pending, untouched
+     * since the cutoff.
+     *
+     * The queue is a broker, not this database, so publishing the "process
+     * this" message cannot be part of the transaction that writes the task. It
+     * is published right after the commit - never before, which would announce
+     * a task that may yet roll back - and a process that dies in between leaves
+     * a task nobody will ever pick up. This is how those are found again, which
+     * turns a lost message into a delay rather than a task lost for good.
+     *
+     * @param positive-int $limit
+     *
+     * @return list<VideoTask>
+     */
+    public function listUnclaimedSince(DateTimeValue $before, int $limit): array;
+
+    /**
+     * Settled tasks that asked for a callback and never got one, untouched
+     * since the cutoff: the same lost-publish problem, at the other end.
+     *
+     * @param positive-int $limit
+     *
+     * @return list<VideoTask>
+     */
+    public function listAwaitingCallback(DateTimeValue $before, int $limit): array;
+
+    /**
+     * Records that the callback for a task was delivered, so the sweep above
+     * stops offering it.
+     */
+    public function markCallbackNotified(UuidValue $id, DateTimeValue $now): void;
+
+    /**
      * Writes the cancellation, but only over a task that is still pending or
      * processing.
      *
