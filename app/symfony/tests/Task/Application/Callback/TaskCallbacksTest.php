@@ -27,20 +27,21 @@ final class TaskCallbacksTest extends TestCase
         $task = VideoTask::create(['images' => []], $this->now, 'https://client.example/hook');
         $task->cancel($this->now);
 
-        new TaskCallbacks($this->bus)->notify($task);
+        new TaskCallbacks($this->bus)->notify($task, 7);
 
         self::assertCount(1, $this->bus->dispatched);
         $message = $this->bus->dispatched[0];
         self::assertInstanceOf(NotifyTaskCallback::class, $message);
         self::assertSame($task->id()->value, $message->taskId);
         self::assertSame('canceled', $message->event);
+        self::assertSame(7, $message->generation, 'the run that settled, so the delivery is recorded against it');
     }
 
     public function testATaskWithoutACallbackUrlQueuesNothing(): void
     {
         $task = VideoTask::create(['images' => []], $this->now);
 
-        new TaskCallbacks($this->bus)->notify($task);
+        new TaskCallbacks($this->bus)->notify($task, 7);
 
         self::assertSame([], $this->bus->dispatched);
     }

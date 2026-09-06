@@ -105,4 +105,22 @@ class VideoTaskEntity
     /** When the retention job deleted this task's videos, if it has. */
     #[ORM\Column(name: 'pruned_at', type: Types::DATETIME_IMMUTABLE, nullable: true)]
     public ?\DateTimeImmutable $prunedAt = null;
+
+    /**
+     * Which attempt of this task a writer is talking about.
+     *
+     * A status is reusable and `updated_at` is a `DATETIME`, so neither names
+     * one attempt: a worker inside ffmpeg whose task was canceled and retried
+     * saw "processing" again and went on writing over the replacement run, and
+     * two runs settling inside the same second let the first one's callback
+     * mark answer for the second. Bumped by every write that starts a run (the
+     * claim) or ends one, so the number is never seen twice; the worker carries
+     * the one its claim produced and a notification carries the one of the
+     * transition that produced it.
+     *
+     * Written only by those conditional statements, never by save(): see
+     * DoctrineVideoTaskRepository.
+     */
+    #[ORM\Column(name: 'run_generation', type: Types::INTEGER, options: ['default' => 1])]
+    public int $runGeneration = 1;
 }

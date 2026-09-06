@@ -33,6 +33,19 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
     public array $callbacksAbandoned = [];
 
     /**
+     * Which attempt each task is on, exactly as the column does: bumped by
+     * every write that starts a run or ends one, and never by a renewal.
+     *
+     * It is kept here rather than on the stored aggregate because the writes
+     * below mutate that shared instance in place, which is what lets a handler
+     * see its own transition. The listings hand out copies carrying the
+     * current number, which is where a caller reads it.
+     *
+     * @var array<string, int>
+     */
+    private array $generations = [];
+
+    /**
      * Run just before getForUpdate() hands a row back, so a test can change the
      * task in the moment the caller believes it is holding it still.
      *
@@ -89,12 +102,12 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         return $this->tasks[$id->value] ?? null;
     }
 
-    public function claimForProcessing(UuidValue $id, DateTimeValue $now, DateTimeValue $staleBefore): bool
+    public function claimForProcessing(UuidValue $id, DateTimeValue $now, DateTimeValue $staleBefore): ?int
     {
         $task = $this->tasks[$id->value] ?? null;
 
         if (null === $task) {
-            return false;
+            return null;
         }
 
         $stale = $task->updatedAt()->toDateTimeImmutable() <= $staleBefore->toDateTimeImmutable();
@@ -106,29 +119,30 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         };
 
         if (!$claimable) {
-            return false;
+            return null;
         }
 
         $task->markProcessing($now);
 
-        return true;
+        return $this->bump($id);
     }
 
-    public function release(UuidValue $id, DateTimeValue $now): bool
+    public function release(UuidValue $id, int $generation, DateTimeValue $now): bool
     {
         $task = $this->tasks[$id->value] ?? null;
 
-        if (null === $task || VideoTaskStatus::PROCESSING !== $task->status()) {
+        if (null === $task || VideoTaskStatus::PROCESSING !== $task->status() || $this->generation($id) !== $generation) {
             return false;
         }
 
         $task->markPending($now);
+        $this->bump($id);
 
         return true;
     }
 
     /** Mirrors the conditional write: nothing happens over a settled row. */
-    public function markFailedIfStillRunning(UuidValue $id, string $errorMessage, DateTimeValue $now): bool
+    public function markFailedIfStillRunning(UuidValue $id, string $errorMessage, DateTimeValue $now): ?int
     {
         if (null !== $this->beforeMarkFailed) {
             ($this->beforeMarkFailed)($id);
@@ -137,12 +151,12 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         $task = $this->tasks[$id->value] ?? null;
 
         if (null === $task || !\in_array($task->status(), [VideoTaskStatus::PENDING, VideoTaskStatus::PROCESSING], true)) {
-            return false;
+            return null;
         }
 
         $task->markFailed($errorMessage, $now);
 
-        return true;
+        return $this->bump($id);
     }
 
     /**
@@ -152,25 +166,27 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
      * here already - and there is no second process that could have finished it
      * in between, which is what the real condition guards against.
      */
-    public function cancel(UuidValue $id, DateTimeValue $now): bool
+    public function cancel(UuidValue $id, DateTimeValue $now): ?int
     {
         $task = $this->tasks[$id->value] ?? null;
 
         if (null === $task) {
-            return false;
+            return null;
         }
 
         if ($task->isCanceled()) {
-            return true;
+            // The handler cancelled the shared instance a moment ago, which is
+            // the write this stands for; the number still has to move on, once.
+            return $this->generations[$id->value] ?? $this->bump($id);
         }
 
         if (!\in_array($task->status(), [VideoTaskStatus::PENDING, VideoTaskStatus::PROCESSING], true)) {
-            return false;
+            return null;
         }
 
         $task->cancel($now);
 
-        return true;
+        return $this->bump($id);
     }
 
     /**
@@ -178,11 +194,11 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
      * attempt still holds, so a cancellation - or a takeover, which in memory
      * shows as the row no longer being "processing" - reports the claim lost.
      */
-    public function renewLease(UuidValue $id, DateTimeValue $now): bool
+    public function renewLease(UuidValue $id, int $generation, DateTimeValue $now): bool
     {
         $task = $this->tasks[$id->value] ?? null;
 
-        if (null === $task || VideoTaskStatus::PROCESSING !== $task->status()) {
+        if (null === $task || VideoTaskStatus::PROCESSING !== $task->status() || $this->generation($id) !== $generation) {
             return false;
         }
 
@@ -195,17 +211,17 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         return true;
     }
 
-    public function complete(UuidValue $id, string $finalVideoUrl, DateTimeValue $now): bool
+    public function complete(UuidValue $id, string $finalVideoUrl, int $generation, DateTimeValue $now): ?int
     {
         $task = $this->tasks[$id->value] ?? null;
 
-        if (null === $task || VideoTaskStatus::PROCESSING !== $task->status()) {
-            return false;
+        if (null === $task || VideoTaskStatus::PROCESSING !== $task->status() || $this->generation($id) !== $generation) {
+            return null;
         }
 
         $this->tasks[$id->value] = self::rowWith($task, VideoTaskStatus::COMPLETED, $finalVideoUrl, $now);
 
-        return true;
+        return $this->bump($id);
     }
 
     /**
@@ -234,7 +250,7 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         );
     }
 
-    public function markCallbackNotified(UuidValue $id, string $event, DateTimeValue $settledAt, DateTimeValue $now): bool
+    public function markCallbackNotified(UuidValue $id, string $event, int $generation, DateTimeValue $now): bool
     {
         if (null !== $this->beforeMarkNotified) {
             ($this->beforeMarkNotified)($id);
@@ -244,10 +260,10 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
 
         // Both halves of the condition the database applies: the status the
         // notification announced, and the run that announced it - two runs can
-        // end the same way, and only updatedAt tells them apart.
+        // end the same way, and only the generation tells them apart.
         if (null === $task
             || $task->status()->value !== $event
-            || $task->updatedAt()->toDateTimeImmutable() != $settledAt->toDateTimeImmutable()
+            || $this->generation($id) !== $generation
         ) {
             return false;
         }
@@ -257,7 +273,7 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         return true;
     }
 
-    public function markCallbackAbandoned(UuidValue $id, string $event, DateTimeValue $settledAt, DateTimeValue $now): bool
+    public function markCallbackAbandoned(UuidValue $id, string $event, int $generation, DateTimeValue $now): bool
     {
         if (null !== $this->beforeMarkAbandoned) {
             ($this->beforeMarkAbandoned)($id);
@@ -269,7 +285,7 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         // verdict belongs to the run that reached it.
         if (null === $task
             || $task->status()->value !== $event
-            || $task->updatedAt()->toDateTimeImmutable() != $settledAt->toDateTimeImmutable()
+            || $this->generation($id) !== $generation
         ) {
             return false;
         }
@@ -304,9 +320,13 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         return true;
     }
 
-    public function claimCallbackNotification(UuidValue $id, DateTimeValue $before, DateTimeValue $now): bool
+    public function claimCallbackNotification(UuidValue $id, int $generation, DateTimeValue $before, DateTimeValue $now): bool
     {
         if (isset($this->callbacksNotified[$id->value]) || isset($this->callbacksAbandoned[$id->value])) {
+            return false;
+        }
+
+        if ($this->generation($id) !== $generation) {
             return false;
         }
 
@@ -370,7 +390,7 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
             static fn (VideoTask $a, VideoTask $b): int => $a->updatedAt()->toDateTimeImmutable() <=> $b->updatedAt()->toDateTimeImmutable(),
         );
 
-        return \array_slice($found, 0, $limit);
+        return array_map($this->withGeneration(...), \array_slice($found, 0, $limit));
     }
 
     public function currentStatus(UuidValue $id): ?VideoTaskStatus
@@ -405,5 +425,42 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
     public function all(): array
     {
         return array_values($this->tasks);
+    }
+
+    /** The attempt the task is on; every row starts on the first one. */
+    private function generation(UuidValue $id): int
+    {
+        return $this->generations[$id->value] ?? VideoTask::FIRST_RUN;
+    }
+
+    /** Moves the task on to the next attempt and answers with it. */
+    private function bump(UuidValue $id): int
+    {
+        return $this->generations[$id->value] = $this->generation($id) + 1;
+    }
+
+    /**
+     * A copy of the task carrying the attempt it is actually on.
+     *
+     * The writes above mutate the stored instance so a handler can see its own
+     * transition, which leaves the generation on that instance behind. The
+     * listings are read-only, and the sweep reads the number from what they
+     * hand back, so this is where the two are put together.
+     */
+    private function withGeneration(VideoTask $task): VideoTask
+    {
+        return VideoTask::rehydrate(
+            $task->id(),
+            $task->payload(),
+            $task->status(),
+            $task->finalVideoUrl(),
+            $task->errorMessage(),
+            $task->createdAt(),
+            $task->updatedAt(),
+            $task->callbackUrl(),
+            $task->renderOptions(),
+            $task->prunedAt(),
+            $this->generation($task->id()),
+        );
     }
 }

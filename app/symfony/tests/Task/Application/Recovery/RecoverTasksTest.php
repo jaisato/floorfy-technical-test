@@ -105,13 +105,13 @@ final class RecoverTasksTest extends TestCase
         $report = $this->recover()->run($this->cutoff());
 
         self::assertSame([$task->id()->value], $report->renotifiedTaskIds);
-        self::assertEquals([new NotifyTaskCallback($task->id()->value, 'completed')], $this->bus->dispatched);
+        self::assertEquals([new NotifyTaskCallback($task->id()->value, 'completed', $task->runGeneration())], $this->bus->dispatched);
     }
 
     public function testACallbackAlreadyDeliveredIsNotSentTwice(): void
     {
         $task = $this->settledTask('2026-03-01T09:00:00+00:00', 'https://client.example/hook');
-        $this->tasks->markCallbackNotified($task->id(), $task->status()->value, $task->updatedAt(), DateTimeValue::fromString('2026-03-01T09:00:01+00:00'));
+        $this->tasks->markCallbackNotified($task->id(), $task->status()->value, $task->runGeneration(), DateTimeValue::fromString('2026-03-01T09:00:01+00:00'));
 
         self::assertSame([], $this->recover()->run($this->cutoff())->renotifiedTaskIds);
     }
@@ -168,7 +168,7 @@ final class RecoverTasksTest extends TestCase
     public function testACallbackGivenUpOnIsNeverOfferedAgain(): void
     {
         $task = $this->settledTask('2026-03-01T09:00:00+00:00', 'https://client.example/hook');
-        $this->tasks->markCallbackAbandoned($task->id(), $task->status()->value, $task->updatedAt(), DateTimeValue::fromString('2026-03-01T09:00:01+00:00'));
+        $this->tasks->markCallbackAbandoned($task->id(), $task->status()->value, $task->runGeneration(), DateTimeValue::fromString('2026-03-01T09:00:01+00:00'));
 
         self::assertSame([], $this->recover()->run($this->cutoff())->renotifiedTaskIds);
 

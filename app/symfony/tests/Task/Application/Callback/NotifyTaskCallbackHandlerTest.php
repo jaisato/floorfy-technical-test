@@ -48,7 +48,7 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         $part->markCompleted('/videos/partial_a.mp4', $this->now);
         $this->partials->save($part);
 
-        $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+        $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed', VideoTask::FIRST_RUN));
 
         self::assertCount(1, $this->delivery->delivered);
         $request = $this->delivery->delivered[0];
@@ -69,7 +69,7 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         $task->retry($this->now);
         $this->tasks->save($task);
 
-        $this->handler()(new NotifyTaskCallback($task->id()->value, 'failed'));
+        $this->handler()(new NotifyTaskCallback($task->id()->value, 'failed', VideoTask::FIRST_RUN));
 
         self::assertSame('failed', $this->delivery->delivered[0]->event);
         self::assertSame('pending', $this->delivery->delivered[0]->body['status']);
@@ -82,6 +82,10 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
      * the recovery sweep looks for settled tasks whose callback never went
      * out, this row said it had, and the client was never told the retry
      * completed.
+     *
+     * The second run here ends the *same way* as the first, which is what the
+     * status half of the fence cannot see: both say "failed", and the run the
+     * notification announced is only told apart by the generation.
      */
     public function testADeliveryOvertakenByARetryDoesNotAnswerForTheNewRun(): void
     {
@@ -89,20 +93,20 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         $task->markFailed('boom', $this->now);
         $this->tasks->save($task);
 
-        // Retried and finished while this notification was on the wire.
+        // Retried and failed again while this notification was on the wire.
         $this->tasks->beforeMarkNotified = function () use ($task): void {
             $task->retry($this->now);
-            $task->markProcessing($this->now);
-            $task->markCompleted('/videos/final.mp4', $this->now);
+            $this->tasks->markFailedIfStillRunning($task->id(), 'boom again', $this->now);
         };
 
-        $this->handler()(new NotifyTaskCallback($task->id()->value, 'failed'));
+        $this->handler()(new NotifyTaskCallback($task->id()->value, 'failed', VideoTask::FIRST_RUN));
 
+        self::assertSame('failed', $this->tasks->get($task->id())?->status()->value, 'the two runs ended alike');
         self::assertCount(1, $this->delivery->delivered, 'the delivery itself still happened');
         self::assertArrayNotHasKey(
             $task->id()->value,
             $this->tasks->callbacksNotified,
-            'and the completion the client has not heard about is still owed',
+            'and the failure the client has not heard about is still owed',
         );
     }
 
@@ -113,7 +117,7 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         $task->markProcessing($this->now);
         $task->markCompleted('/videos/final.mp4', $this->now);
 
-        $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+        $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed', VideoTask::FIRST_RUN));
 
         self::assertArrayHasKey($task->id()->value, $this->tasks->callbacksNotified);
     }
@@ -123,7 +127,7 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         $task = VideoTask::create(['images' => []], $this->now);
         $this->tasks->save($task);
 
-        $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+        $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed', VideoTask::FIRST_RUN));
 
         self::assertSame([], $this->delivery->delivered);
     }
@@ -133,7 +137,7 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
     {
         $this->expectException(UnrecoverableMessageHandlingException::class);
 
-        $this->handler()(new NotifyTaskCallback('0195c6a0-1c37-7000-8000-0000000000ff', 'completed'));
+        $this->handler()(new NotifyTaskCallback('0195c6a0-1c37-7000-8000-0000000000ff', 'completed', VideoTask::FIRST_RUN));
     }
 
     public function testAPermanentDeliveryFailureIsNotRetried(): void
@@ -142,7 +146,7 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         $this->delivery->failWith(CallbackDeliveryFailed::refused('http://10.0.0.1/hook', new \RuntimeException('private')));
 
         try {
-            $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+            $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed', VideoTask::FIRST_RUN));
             self::fail('a refused URL must be reported');
         } catch (UnrecoverableMessageHandlingException $e) {
             self::assertInstanceOf(CallbackDeliveryFailed::class, $e->getPrevious());
@@ -165,7 +169,7 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         $this->delivery->failWith(CallbackDeliveryFailed::unsigned());
 
         try {
-            $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+            $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed', VideoTask::FIRST_RUN));
             self::fail('a deployment that cannot sign must be reported');
         } catch (UnrecoverableMessageHandlingException) {
             // expected
@@ -187,7 +191,7 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
 
         $this->expectException(CallbackDeliveryFailed::class);
 
-        $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+        $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed', VideoTask::FIRST_RUN));
     }
 
     /** A delay is not an outcome: the notification is still owed and the sweep still owes it. */
@@ -197,7 +201,7 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         $this->delivery->failWith(CallbackDeliveryFailed::status('https://client.example/hook', 503));
 
         try {
-            $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+            $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed', VideoTask::FIRST_RUN));
         } catch (CallbackDeliveryFailed) {
             // expected
         }
@@ -217,15 +221,15 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         $this->tasks->save($task);
         $this->delivery->failWith(CallbackDeliveryFailed::unsigned());
 
-        // Retried and finished while this notification was being refused.
+        // Retried and failed again while this notification was being refused:
+        // the same outcome, so only the generation says it is another run.
         $this->tasks->beforeMarkAbandoned = function () use ($task): void {
             $task->retry($this->now);
-            $task->markProcessing($this->now);
-            $task->markCompleted('/videos/final.mp4', $this->now);
+            $this->tasks->markFailedIfStillRunning($task->id(), 'boom again', $this->now);
         };
 
         try {
-            $this->handler()(new NotifyTaskCallback($task->id()->value, 'failed'));
+            $this->handler()(new NotifyTaskCallback($task->id()->value, 'failed', VideoTask::FIRST_RUN));
             self::fail('a deployment that cannot sign must be reported');
         } catch (UnrecoverableMessageHandlingException) {
             // expected
@@ -242,7 +246,7 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         $this->delivery->failWith(CallbackDeliveryFailed::status('https://client.example/hook', 500));
 
         try {
-            $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+            $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed', VideoTask::FIRST_RUN));
         } catch (CallbackDeliveryFailed) {
             // expected
         }

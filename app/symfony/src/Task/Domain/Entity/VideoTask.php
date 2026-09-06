@@ -12,6 +12,9 @@ use App\Task\Domain\ValueObject\RenderOptions;
 
 final class VideoTask
 {
+    /** The generation a task is created with, and the column's default. */
+    public const int FIRST_RUN = 1;
+
     /** @param array<string,mixed> $payload */
     private function __construct(
         private readonly UuidValue $id,
@@ -30,6 +33,18 @@ final class VideoTask
         private readonly ?RenderOptions $renderOptions,
         /** When the retention job deleted this task's videos, if it has. */
         private ?DateTimeValue $prunedAt,
+        /**
+         * Which attempt of this task the row is on.
+         *
+         * Read-only here: it is moved on by the repository's conditional
+         * writes, which are the only things that can decide a race. What it is
+         * for is naming one attempt - a status is reusable, and so is the
+         * second that `updated_at` records - so that a worker cannot renew or
+         * finish a claim that has since been taken from it, and a callback
+         * cannot be recorded as delivered for a run that is not the one it
+         * announced.
+         */
+        private readonly int $runGeneration,
     ) {
     }
 
@@ -47,6 +62,7 @@ final class VideoTask
             $callbackUrl,
             $renderOptions,
             null,
+            self::FIRST_RUN,
         );
     }
 
@@ -62,8 +78,15 @@ final class VideoTask
         ?string $callbackUrl = null,
         ?RenderOptions $renderOptions = null,
         ?DateTimeValue $prunedAt = null,
+        int $runGeneration = self::FIRST_RUN,
     ): self {
-        return new self($id, $payload, $status, $finalVideoUrl, $errorMessage, $createdAt, $updatedAt, $callbackUrl, $renderOptions, $prunedAt);
+        return new self($id, $payload, $status, $finalVideoUrl, $errorMessage, $createdAt, $updatedAt, $callbackUrl, $renderOptions, $prunedAt, $runGeneration);
+    }
+
+    /** Which attempt of this task the row was on when it was read. */
+    public function runGeneration(): int
+    {
+        return $this->runGeneration;
     }
 
     public function callbackUrl(): ?string

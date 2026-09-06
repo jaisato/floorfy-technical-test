@@ -56,14 +56,16 @@ final readonly class MarkTaskFailedWhenRetriesAreExhausted
         // back as failed: the DELETE had already answered success, and the
         // client was told the task was canceled and then that it failed, with
         // a callback for each. Whoever's UPDATE lands first decides.
-        if (!$this->tasks->markFailedIfStillRunning($id, self::reason($event->getThrowable()), $this->clock->now())) {
+        $settled = $this->tasks->markFailedIfStillRunning($id, self::reason($event->getThrowable()), $this->clock->now());
+
+        if (null === $settled) {
             return;
         }
 
         $task = $this->tasks->get($id);
 
         if (null !== $task) {
-            $this->callbacks->notify($task);
+            $this->callbacks->notify($task, $settled);
         }
     }
 

@@ -21,12 +21,17 @@ final readonly class TaskCallbacks
     {
     }
 
-    public function notify(VideoTask $task): void
+    /**
+     * @param int $generation the generation the transition that settled the
+     *                        task produced, which is what the delivery is
+     *                        recorded against
+     */
+    public function notify(VideoTask $task, int $generation): void
     {
         if (null === $task->callbackUrl()) {
             return;
         }
 
-        $this->commandBus->dispatch(new NotifyTaskCallback($task->id()->value, $task->status()->value));
+        $this->commandBus->dispatch(new NotifyTaskCallback($task->id()->value, $task->status()->value, $generation));
     }
 }

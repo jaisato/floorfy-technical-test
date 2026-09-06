@@ -82,12 +82,17 @@ final readonly class RecoverTasks
             // sweep in between published another one and the client got the
             // same POST again and again. A dry run claims nothing: it reports
             // what a real run would do, and must leave the sweep able to do it.
-            if (!$dryRun && !$this->tasks->claimCallbackNotification($task->id(), $before, $this->clock->now())) {
+            // The generation goes into the claim and into the message: it is
+            // the run this sweep read, so a task retried and settled again in
+            // between loses the claim rather than being renotified about the
+            // run before it - and the delivery is recorded against that run
+            // and no other.
+            if (!$dryRun && !$this->tasks->claimCallbackNotification($task->id(), $task->runGeneration(), $before, $this->clock->now())) {
                 continue;
             }
 
             if (!$dryRun) {
-                $this->commandBus->dispatch(new NotifyTaskCallback($task->id()->value, $task->status()->value));
+                $this->commandBus->dispatch(new NotifyTaskCallback($task->id()->value, $task->status()->value, $task->runGeneration()));
             }
 
             $renotified[] = $task->id()->value;

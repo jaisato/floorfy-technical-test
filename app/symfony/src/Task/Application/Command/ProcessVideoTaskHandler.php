@@ -94,7 +94,13 @@ final readonly class ProcessVideoTaskHandler
 
         $now = $this->clock->now();
 
-        if (!$this->tasks->claimForProcessing($taskId, $now, $now->minusSeconds($this->lease()))) {
+        // The number the claim produced is this attempt's, and every write it
+        // makes from here carries it back. A status cannot do that job: cancel
+        // this task and retry it while the attempt is inside ffmpeg and the row
+        // says "processing" again, of somebody else's run.
+        $generation = $this->tasks->claimForProcessing($taskId, $now, $now->minusSeconds($this->lease()));
+
+        if (null === $generation) {
             // Already finished, or in the hands of another worker. Acknowledging
             // is right: retrying would not change the answer.
             $this->logger->info('Task not claimable, skipping', ['task_id' => $taskId->value]);
@@ -111,7 +117,7 @@ final readonly class ProcessVideoTaskHandler
         $this->logger->info('Task processing started', ['task_id' => $taskId->value]);
 
         try {
-            $this->process($task);
+            $this->process($task, $generation);
         } catch (TaskCanceled) {
             // Not a failure, so nothing is rethrown and nothing is retried; the
             // cancellation already replaced the claim, so there is none to hand
@@ -121,13 +127,13 @@ final readonly class ProcessVideoTaskHandler
             // Hand the claim back so the next delivery can take it. Without
             // this the task stays "processing" and every retry is refused by
             // the claim.
-            $this->tasks->release($task->id(), $this->clock->now());
+            $this->tasks->release($task->id(), $generation, $this->clock->now());
 
             throw $e;
         }
     }
 
-    private function process(VideoTask $task): void
+    private function process(VideoTask $task, int $generation): void
     {
         $partials = $this->partials->listByTaskId($task->id());
 
@@ -151,7 +157,7 @@ final readonly class ProcessVideoTaskHandler
         foreach ($partials as $partial) {
             // Between parts, not during one: a running ffmpeg is left to finish
             // its clip, which a retry then reuses.
-            $this->keepClaim($task);
+            $this->keepClaim($task, $generation);
 
             $reused = $this->reusableFile($partial);
 
@@ -191,8 +197,8 @@ final readonly class ProcessVideoTaskHandler
             throw $reason;
         }
 
-        $this->keepClaim($task);
-        $this->composeFinal($task, $clips, $options);
+        $this->keepClaim($task, $generation);
+        $this->composeFinal($task, $clips, $options, $generation);
     }
 
     /**
@@ -232,9 +238,9 @@ final readonly class ProcessVideoTaskHandler
         return max($this->leaseSeconds, $longestStep + self::LEASE_SLACK_SECONDS);
     }
 
-    private function keepClaim(VideoTask $task): void
+    private function keepClaim(VideoTask $task, int $generation): void
     {
-        if ($this->tasks->renewLease($task->id(), $this->clock->now())) {
+        if ($this->tasks->renewLease($task->id(), $generation, $this->clock->now())) {
             return;
         }
 
@@ -249,7 +255,7 @@ final readonly class ProcessVideoTaskHandler
     }
 
     /** @param list<Clip> $clips */
-    private function composeFinal(VideoTask $task, array $clips, RenderOptions $options): void
+    private function composeFinal(VideoTask $task, array $clips, RenderOptions $options, int $generation): void
     {
         $name = 'final_'.$task->id()->value.'.mp4';
         $staged = $this->stagingDir().'/'.$name;
@@ -278,12 +284,14 @@ final readonly class ProcessVideoTaskHandler
         // so a client was told the task was canceled and then that it had
         // completed. The video stays on disk either way; the retention job
         // clears it with the rest of the canceled task's files.
-        if (!$this->tasks->complete($task->id(), $finalUrl, $completedAt)) {
+        $settled = $this->tasks->complete($task->id(), $finalUrl, $generation, $completedAt);
+
+        if (null === $settled) {
             throw TaskCanceled::noticed($task->id()->value);
         }
 
         $task->markCompleted($finalUrl, $completedAt);
-        $this->callbacks->notify($task);
+        $this->callbacks->notify($task, $settled);
 
         $this->logger->info('Task completed', [
             'task_id' => $task->id()->value,
