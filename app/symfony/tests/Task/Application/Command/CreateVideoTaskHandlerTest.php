@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Tests\Task\Application\Command;
 
+use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Application\Command\CreateVideoTaskCommand;
 use App\Task\Application\Command\CreateVideoTaskHandler;
 use App\Task\Application\Command\ProcessVideoTaskCommand;
@@ -14,6 +15,7 @@ use App\Task\Domain\ValueObject\RenderOptions;
 use App\Tests\Support\FixedClock;
 use App\Tests\Support\InMemoryPartialVideoRepository;
 use App\Tests\Support\InMemoryVideoTaskRepository;
+use App\Tests\Support\RecordingLogger;
 use App\Tests\Support\RecordingMessageBus;
 use App\Tests\Support\SpyTransaction;
 use PHPUnit\Framework\TestCase;
@@ -24,6 +26,7 @@ final class CreateVideoTaskHandlerTest extends TestCase
     private InMemoryPartialVideoRepository $partials;
     private SpyTransaction $transaction;
     private RecordingMessageBus $bus;
+    private RecordingLogger $logger;
 
     protected function setUp(): void
     {
@@ -31,6 +34,7 @@ final class CreateVideoTaskHandlerTest extends TestCase
         $this->partials = new InMemoryPartialVideoRepository();
         $this->transaction = new SpyTransaction();
         $this->bus = new RecordingMessageBus($this->transaction);
+        $this->logger = new RecordingLogger();
     }
 
     public function testItStoresThePendingTaskAndOnePartPerImage(): void
@@ -117,6 +121,31 @@ final class CreateVideoTaskHandlerTest extends TestCase
         self::assertSame([false], $this->bus->insideTransaction);
     }
 
+    /**
+     * A broker that refuses the publish does not undo the task.
+     *
+     * The rows are committed by then, and RecoverTasks looks for exactly this
+     * row - pending, untouched - and publishes it again: that sweep is why a
+     * lost publish is a delay rather than a loss, and it already covers the
+     * process dying one line earlier. Answered 5xx, as this used to be, it was
+     * worse than that crash: the idempotency key is released on a retryable
+     * status, so the client's retry created a second task with all of its
+     * rendering while the sweep published the first.
+     */
+    public function testABrokerThatRefusesThePublishStillLeavesTheTaskCreated(): void
+    {
+        $this->bus->failure = new \RuntimeException('AMQPIOException: connection refused');
+
+        $id = ($this->handler())(new CreateVideoTaskCommand([['url' => 'https://example.com/a.png', 'transition' => 'pan']]));
+
+        self::assertNotSame('', $id, 'the caller is given the task it created');
+        $task = $this->tasks->get(UuidValue::fromString($id));
+        self::assertNotNull($task);
+        self::assertSame(VideoTaskStatus::PENDING, $task->status(), 'pending is what the sweep looks for');
+        self::assertCount(1, $this->partials->listByTaskId($task->id()));
+        self::assertStringContainsString('recovery sweep', $this->logger->everythingLogged());
+    }
+
     /** What the deployment renders with when a task chooses nothing. */
     private static function defaults(): RenderOptions
     {
@@ -132,6 +161,7 @@ final class CreateVideoTaskHandlerTest extends TestCase
             $this->transaction,
             $this->bus,
             self::defaults(),
+            $this->logger,
         );
     }
 }
