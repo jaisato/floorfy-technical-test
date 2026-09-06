@@ -140,6 +140,38 @@ final class GetVideoTaskHandlerTest extends TestCase
         ], $view->partialVideosAsArray());
     }
 
+    /**
+     * The source of an image is routinely presigned, and this handed the
+     * signature back to whoever reads the task. The listing exposes every id
+     * and the API is open unless a deployment turns tokens on, so a caller
+     * could walk the ids and collect the credential of every source anybody
+     * had submitted.
+     */
+    public function testAPresignedImageUrlIsServedWithoutItsCredential(): void
+    {
+        $task = VideoTask::create(['images' => []], $this->now);
+        $this->tasks->save($task);
+
+        $this->partials->saveAll([
+            PartialVideo::create(
+                $task->id(),
+                'https://bucket.s3.example.com/in/a.png?X-Amz-Signature=deadbeef&X-Amz-Expires=900',
+                Transition::PAN,
+                0,
+                $this->now,
+            ),
+            PartialVideo::create($task->id(), 'https://bot:s3cr3t@origin.example.com/b.png', Transition::ZOOM_IN, 1, $this->now),
+        ]);
+
+        $view = ($this->handler())(new GetVideoTaskQuery($task->id()->value));
+
+        self::assertNotNull($view);
+        self::assertSame(
+            ['https://bucket.s3.example.com/in/a.png?…', 'https://origin.example.com/b.png'],
+            array_column($view->partialVideosAsArray(), 'image_url'),
+        );
+    }
+
     public function testACompletedTaskCarriesItsFinalUrl(): void
     {
         $task = VideoTask::create(['images' => []], $this->now);

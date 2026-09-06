@@ -45,6 +45,31 @@ final class RequestFingerprintTest extends TestCase
         );
     }
 
+    /**
+     * An object whose keys read "0", "1", … is not the list with those
+     * positions. Decoded into associative arrays the two were the same PHP
+     * value and fingerprinted alike, so one key could replay the 400 stored
+     * for the object form as the answer to the corrected list - or the 201
+     * stored for the list as the answer to a body that does not validate -
+     * where the two bodies differ and the answer is a 409 mismatch.
+     */
+    public function testAnObjectWithNumericKeysIsNotTheEquivalentList(): void
+    {
+        self::assertNotSame(
+            RequestFingerprint::of(self::post('/api/tasks', '{"images":{"0":{"url":"u","transition":"pan"}}}')),
+            RequestFingerprint::of(self::post('/api/tasks', '{"images":[{"url":"u","transition":"pan"}]}')),
+        );
+    }
+
+    /** And an empty object is not an empty list. */
+    public function testAnEmptyObjectIsNotAnEmptyList(): void
+    {
+        self::assertNotSame(
+            RequestFingerprint::of(self::post('/api/tasks', '{"images":{}}')),
+            RequestFingerprint::of(self::post('/api/tasks', '{"images":[]}')),
+        );
+    }
+
     public function testADifferentValueChangesTheFingerprint(): void
     {
         self::assertNotSame(

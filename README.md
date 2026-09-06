@@ -110,7 +110,7 @@ POST /api/tasks
       │  valida el cuerpo, escribe la tarea y sus partes en UNA transacción
       │  y, una vez confirmada, publica un mensaje en RabbitMQ
       ▼
-  [ worker ]  messenger:consume async callbacks
+  [ worker ]  messenger:consume async
       │  1. reclama la tarea con un UPDATE condicional (una sola vez)
       │  2. por cada parte: descarga la imagen (con guardia SSRF) y la anima con
       │     FFmpeg hacia un directorio de staging
@@ -125,7 +125,8 @@ DELETE /api/tasks/{id}       cancela una tarea pendiente o en curso
 POST /api/tasks/{id}/retry   reencola una tarea fallida o cancelada
       │
       ▼  al llegar a completed | failed | canceled, si la tarea tiene callback_url
-  [ worker ]  POST firmado (X-Task-Signature) con el resumen de la tarea
+  [ callback-worker ]  messenger:consume callbacks
+      │  POST firmado (X-Task-Signature) con el resumen de la tarea
 ```
 
 Puntos que merece la pena conocer:
@@ -365,7 +366,10 @@ para cualquier otro estado; **404** si no existe.
 Si la tarea se creó con `callback_url`, al llegar a `completed`, `failed` o
 `canceled` se encola una notificación (transporte `callbacks`, con sus propios
 reintentos: 6 intentos de 30 s a 10 min, después la cola `failed`) que hace un
-`POST` a esa URL:
+`POST` a esa URL. La consume un worker propio, `callback-worker`: un worker
+procesa un mensaje cada vez y un render dura minutos, así que compartiendo
+proceso con `async` ninguna notificación salía hasta que terminara el vídeo que
+tuviera delante.
 
 | Cabecera | Valor |
 |---|---|

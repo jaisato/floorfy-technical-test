@@ -5,8 +5,15 @@ declare(strict_types=1);
 namespace App\Task\Infrastructure\Media;
 
 use App\Shared\Domain\Exception\ClientSafe;
+use App\Shared\Domain\Exception\PermanentFailure;
 
-final class BlockedUrl extends \RuntimeException implements ClientSafe
+/**
+ * The URL policy refused an image, for what the URL is rather than for
+ * anything that happened: its scheme, its port, the address its host resolves
+ * to, the size or the media type it serves. Permanent, therefore - the next
+ * attempt reaches the same conclusion.
+ */
+final class BlockedUrl extends \RuntimeException implements ClientSafe, PermanentFailure
 {
     public static function malformed(string $url): self
     {

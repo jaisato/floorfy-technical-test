@@ -8,6 +8,7 @@ use App\Shared\Application\Clock\Clock;
 use App\Shared\Application\Redaction\Urls;
 use App\Shared\Domain\Exception\ClientSafe;
 use App\Shared\Domain\Exception\HasOperatorDetail;
+use App\Shared\Domain\Exception\PermanentFailure;
 use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Application\Callback\TaskCallbacks;
 use App\Task\Application\Url\VideoUrls;
@@ -145,6 +146,7 @@ final readonly class ProcessVideoTaskHandler
 
         $clips = [];
         $failed = 0;
+        $permanent = 0;
 
         foreach ($partials as $partial) {
             // Between parts, not during one: a running ffmpeg is left to finish
@@ -165,12 +167,28 @@ final readonly class ProcessVideoTaskHandler
                 // parts are rendered anyway, so a retry only has the failures
                 // left to do and the response says which ones they were.
                 ++$failed;
+                $permanent += $e instanceof PermanentFailure ? 1 : 0;
                 $this->recordPartialFailure($partial, $e);
             }
         }
 
         if ($failed > 0) {
-            throw TaskProcessingFailed::partialsFailed($failed, \count($partials));
+            $reason = TaskProcessingFailed::partialsFailed($failed, \count($partials));
+
+            // Nothing here is going to change: every image that failed was
+            // refused by the URL policy, for what its URL is rather than for
+            // anything that happened. Retried like a timeout, those twenty
+            // attempts spread over roughly three hours each held a worker to
+            // reach the conclusion the first one had, and the task reached
+            // `failed` with exactly the same answer. One failure that *could*
+            // pass later - a host that was down, a disk that was full - is
+            // enough to keep the whole attempt retryable, because the parts
+            // that already rendered are reused and only the failures are left.
+            if ($permanent === $failed) {
+                throw new UnrecoverableMessageHandlingException($reason->getMessage(), previous: $reason);
+            }
+
+            throw $reason;
         }
 
         $this->keepClaim($task);

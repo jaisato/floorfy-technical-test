@@ -58,6 +58,8 @@ services:
             - '../src/Shared/Application/Health/Readiness.php'
             # Registered twice below, once per directory, with its name and path.
             - '../src/Shared/Infrastructure/Health/WritableDirectoryCheck.php'
+            # Likewise, once per transport.
+            - '../src/Shared/Infrastructure/Health/TransportCheck.php'
             - '../src/Shared/Domain/Exception/'
             - '../src/Shared/Domain/ValueObject/'
             - '../src/Shared/Infrastructure/Persistence/Doctrine/Entity/'
@@ -126,6 +128,25 @@ services:
         arguments:
             $checkName: 'work_dir'
             $directory: '%app.work_dir%'
+
+    # And one per queue. They are configured separately - their own DSN, their
+    # own vhost, their own credentials - so a deployment can have the video
+    # queue reachable and the callback queue not, and probing only the first
+    # said the application was ready while no webhook could be published or
+    # consumed.
+    app.health_check.transport:
+        class: App\Shared\Infrastructure\Health\TransportCheck
+        tags: ['app.health_check']
+        arguments:
+            $checkName: 'transport'
+            $transport: '@messenger.transport.async'
+
+    app.health_check.callbacks_transport:
+        class: App\Shared\Infrastructure\Health\TransportCheck
+        tags: ['app.health_check']
+        arguments:
+            $checkName: 'callbacks_transport'
+            $transport: '@messenger.transport.callbacks'
 
     # ffmpeg budgets. One invocation per part, then one for the concatenation.
     App\Task\Infrastructure\Video\FfmpegImageAnimator:

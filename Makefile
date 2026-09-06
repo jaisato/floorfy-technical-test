@@ -37,8 +37,8 @@ sh: ## Open a shell in the php container
 migrate: ## Apply pending migrations inside the stack
 	$(PHP) bin/console doctrine:migrations:migrate --no-interaction
 
-worker: ## Follow the worker's logs
-	$(COMPOSE) logs -f worker
+worker: ## Follow the logs of both workers (video renders and webhooks)
+	$(COMPOSE) logs -f worker callback-worker
 
 ready: ## Run the readiness checks inside the stack (0 = ready)
 	$(PHP) bin/console app:health:ready

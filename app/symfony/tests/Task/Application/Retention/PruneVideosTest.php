@@ -166,6 +166,37 @@ final class PruneVideosTest extends TestCase
         self::assertDirectoryDoesNotExist($work);
     }
 
+    /**
+     * A scratch directory that will not go keeps the task in the listing.
+     *
+     * Every failure here used to be suppressed and the task marked pruned
+     * anyway, so a work volume gone read-only left the downloaded sources on
+     * disk for good: listPrunable() skips a pruned task, and nothing else
+     * sweeps that directory.
+     */
+    public function testAScratchDirectoryThatCannotBeRemovedLeavesTheTaskForTheNextRun(): void
+    {
+        $task = $this->settledTask('2026-01-01T00:00:00+00:00');
+        $this->videoFile('final_'.$task->id()->value.'.mp4');
+        $work = $this->dir->file('work/images/'.$task->id()->value);
+        mkdir($work, 0o775, true);
+
+        // A symlink to a directory, which rmdir() refuses whoever is asking:
+        // the same shape as the read-only volume and the lost permission this
+        // guards against, and one a test can produce as any user.
+        $elsewhere = $this->dir->file('work/elsewhere');
+        mkdir($elsewhere, 0o775, true);
+        symlink($elsewhere, $work.'/link');
+
+        $logger = new RecordingLogger();
+        $report = $this->prune($logger)->run($this->cutoff());
+
+        self::assertSame([], $report->taskIds, 'nothing is reported as fully pruned');
+        self::assertNull($task->prunedAt(), 'so the next run comes back to it');
+        self::assertDirectoryExists($work);
+        self::assertStringContainsString('could not delete every file', $logger->everythingLogged());
+    }
+
     public function testATaskInsideTheWindowIsLeftAlone(): void
     {
         $task = $this->settledTask('2026-02-25T00:00:00+00:00');
