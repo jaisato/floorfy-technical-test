@@ -150,6 +150,10 @@ final class TaskControllerTest extends ApiTestCase
         self::assertSame($taskId, $body['task_id']);
         self::assertSame('pending', $body['status']);
         self::assertNull($body['error']);
+        self::assertNull($body['final_video_url']);
+        self::assertSame(['completed' => 0, 'failed' => 0, 'pending' => 1, 'total' => 1, 'percent' => 0], $body['progress']);
+        self::assertMatchesRegularExpression('/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\+00:00$/', $body['created_at']);
+        self::assertSame($body['created_at'], $body['updated_at']);
         self::assertSame([
             [
                 'id' => $body['partial_videos'][0]['id'],
@@ -160,6 +164,32 @@ final class TaskControllerTest extends ApiTestCase
                 'error' => null,
             ],
         ], $body['partial_videos']);
+    }
+
+    public function testTheProgressFollowsTheParts(): void
+    {
+        $this->json('POST', '/api/tasks', ['images' => [
+            ['url' => 'https://example.com/a.png', 'transition' => 'pan'],
+            ['url' => 'https://example.com/b.png', 'transition' => 'pan'],
+            ['url' => 'https://example.com/c.png', 'transition' => 'pan'],
+        ]]);
+        $taskId = $this->responseBody()['task_id'];
+
+        $this->connection()->executeStatement(
+            "UPDATE partial_videos SET status = 'completed', video_path = '/videos/partial_a.mp4' WHERE task_id = ? AND position = 0",
+            [$taskId],
+        );
+        $this->connection()->executeStatement(
+            "UPDATE partial_videos SET status = 'failed', error_message = 'la descarga falló' WHERE task_id = ? AND position = 1",
+            [$taskId],
+        );
+
+        $this->client->request('GET', '/api/tasks/'.$taskId);
+
+        self::assertSame(
+            ['completed' => 1, 'failed' => 1, 'pending' => 1, 'total' => 3, 'percent' => 33],
+            $this->responseBody()['progress'],
+        );
     }
 
     public function testTheFinalEndpointReportsNoUrlUntilTheVideoExists(): void

@@ -54,11 +54,45 @@ final class GetVideoTaskHandlerTest extends TestCase
         $view = ($this->handler())(new GetVideoTaskQuery($task->id()->value));
 
         self::assertNotNull($view);
-        self::assertSame($task->id()->value, $view->taskId);
-        self::assertSame('pending', $view->status);
+        self::assertSame($task->id()->value, $view->summary->taskId);
+        self::assertSame('pending', $view->summary->status);
         self::assertSame(
             ['https://example.com/a.png', 'https://example.com/b.png'],
             array_column($view->partialVideosAsArray(), 'image_url'),
+        );
+    }
+
+    /**
+     * A client polling a task with twenty images wants to know how many are
+     * done, not only whether the whole thing is.
+     */
+    public function testTheSummaryCountsThePartsAndCarriesTheTimestamps(): void
+    {
+        $task = VideoTask::create(['images' => []], $this->now);
+        $this->tasks->save($task);
+
+        $done = PartialVideo::create($task->id(), 'https://example.com/a.png', Transition::PAN, 0, $this->now);
+        $done->markCompleted('/videos/partial_a.mp4', $this->now);
+        $broken = PartialVideo::create($task->id(), 'https://example.com/b.png', Transition::PAN, 1, $this->now);
+        $broken->markFailed('la descarga falló', $this->now);
+        $waiting = PartialVideo::create($task->id(), 'https://example.com/c.png', Transition::PAN, 2, $this->now);
+        $this->partials->saveAll([$done, $broken, $waiting]);
+
+        $view = ($this->handler())(new GetVideoTaskQuery($task->id()->value));
+
+        self::assertNotNull($view);
+        self::assertSame([
+            'task_id' => $task->id()->value,
+            'status' => 'pending',
+            'progress' => ['completed' => 1, 'failed' => 1, 'pending' => 1, 'total' => 3, 'percent' => 33],
+            'final_video_url' => null,
+            'error' => null,
+            'created_at' => '2026-01-02T03:04:05+00:00',
+            'updated_at' => '2026-01-02T03:04:05+00:00',
+        ], $view->summary->toArray());
+        self::assertSame(
+            ['task_id', 'status', 'progress', 'final_video_url', 'error', 'created_at', 'updated_at', 'partial_videos'],
+            array_keys($view->toArray()),
         );
     }
 
@@ -112,9 +146,9 @@ final class GetVideoTaskHandlerTest extends TestCase
         $view = ($this->handler())(new GetVideoTaskQuery($task->id()->value));
 
         self::assertNotNull($view);
-        self::assertSame('completed', $view->status);
-        self::assertSame('http://localhost:8080/videos/final.mp4', $view->finalVideoUrl);
-        self::assertNull($view->error);
+        self::assertSame('completed', $view->summary->status);
+        self::assertSame('http://localhost:8080/videos/final.mp4', $view->summary->finalVideoUrl);
+        self::assertNull($view->summary->error);
     }
 
     public function testAFailedTaskCarriesItsReason(): void
@@ -126,9 +160,9 @@ final class GetVideoTaskHandlerTest extends TestCase
         $view = ($this->handler())(new GetVideoTaskQuery($task->id()->value));
 
         self::assertNotNull($view);
-        self::assertSame('failed', $view->status);
-        self::assertNull($view->finalVideoUrl);
-        self::assertSame('No se pudieron generar 1 de 2 vídeos parciales.', $view->error);
+        self::assertSame('failed', $view->summary->status);
+        self::assertNull($view->summary->finalVideoUrl);
+        self::assertSame('No se pudieron generar 1 de 2 vídeos parciales.', $view->summary->error);
     }
 
     private function handler(): GetVideoTaskHandler

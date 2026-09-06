@@ -10,12 +10,15 @@ final readonly class VideoTaskView
      * @param list<PartialVideoView> $partialVideos
      */
     public function __construct(
-        public string $taskId,
-        public string $status,
+        public VideoTaskSummaryView $summary,
         public array $partialVideos,
-        public ?string $finalVideoUrl,
-        public ?string $error,
     ) {
+    }
+
+    /** @return array<string, mixed> */
+    public function toArray(): array
+    {
+        return $this->summary->toArray() + ['partial_videos' => $this->partialVideosAsArray()];
     }
 
     /** @return list<array<string, string|null>> */
