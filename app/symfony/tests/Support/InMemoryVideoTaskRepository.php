@@ -26,6 +26,9 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
     /** @var array<string, DateTimeValue> when each task's callback was delivered */
     public array $callbacksNotified = [];
 
+    /** @var array<string, DateTimeValue> when the sweep last published one */
+    public array $callbacksAttempted = [];
+
     /**
      * Run just before getForUpdate() hands a row back, so a test can change the
      * task in the moment the caller believes it is holding it still.
@@ -193,7 +196,22 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
 
     public function clearCallbackNotification(UuidValue $id): void
     {
-        unset($this->callbacksNotified[$id->value]);
+        unset($this->callbacksNotified[$id->value], $this->callbacksAttempted[$id->value]);
+    }
+
+    public function claimCallbackNotification(UuidValue $id, DateTimeValue $before, DateTimeValue $now): bool
+    {
+        if (isset($this->callbacksNotified[$id->value])) {
+            return false;
+        }
+
+        if ($this->attemptedSince($id, $before)) {
+            return false;
+        }
+
+        $this->callbacksAttempted[$id->value] = $now;
+
+        return true;
     }
 
     public function listUnclaimedSince(DateTimeValue $before, int $limit): array
@@ -210,10 +228,20 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         return $this->oldestFirst(
             fn (VideoTask $task): bool => null !== $task->callbackUrl()
                 && !isset($this->callbacksNotified[$task->id()->value])
+                && !$this->attemptedSince($task->id(), $before)
                 && \in_array($task->status(), VideoTaskStatus::settled(), true),
             $before,
             $limit,
         );
+    }
+
+    /** Whether the sweep already published this notification within the window. */
+    private function attemptedSince(UuidValue $id, DateTimeValue $before): bool
+    {
+        $attempted = $this->callbacksAttempted[$id->value] ?? null;
+
+        return null !== $attempted
+            && $attempted->toDateTimeImmutable() >= $before->toDateTimeImmutable();
     }
 
     /**

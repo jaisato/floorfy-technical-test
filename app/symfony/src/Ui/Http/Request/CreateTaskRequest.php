@@ -31,7 +31,13 @@ final class CreateTaskRequest
      */
     public function __construct(
         #[Assert\NotNull(message: 'Falta el campo "images".')]
-        #[Assert\Type(type: 'array', message: 'El campo "images" debe ser una lista.')]
+        // A list, not merely an array. A JSON object passes is_array() and
+        // every constraint below it, and the parts are then assembled in the
+        // order its members happen to sit in the document - so a client that
+        // wrote {"2": …, "1": …} believing the keys ordered them gets a video
+        // whose scenes run the other way, with nothing said. The contract is a
+        // list, so the format has to be one.
+        #[Assert\Type(type: 'list', message: 'El campo "images" debe ser una lista.')]
         #[Assert\Count(
             min: 1,
             max: self::MAX_IMAGES,

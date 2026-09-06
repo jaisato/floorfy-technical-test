@@ -220,13 +220,39 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
 
     public function clearCallbackNotification(UuidValue $id): void
     {
+        // The attempt goes with it: a run queued again owes a fresh
+        // notification, and the stamp of the previous run's sweep would hold
+        // that one back for a whole cutoff.
         $this->em->getConnection()->executeStatement(
-            'UPDATE video_tasks SET callback_notified_at = NULL WHERE id = :id',
+            'UPDATE video_tasks SET callback_notified_at = NULL, callback_attempted_at = NULL WHERE id = :id',
             ['id' => $id->value],
             ['id' => ParameterType::STRING],
         );
 
         $this->forgetCachedCopy($id);
+    }
+
+    public function claimCallbackNotification(UuidValue $id, DateTimeValue $before, DateTimeValue $now): bool
+    {
+        // Conditional, like the claim on a task: two sweeps running at once
+        // both read the row as owed, and only the one whose UPDATE lands gets
+        // to publish. The condition repeats what the listing asked so a
+        // notification delivered in between is not claimed at all.
+        $affected = $this->em->getConnection()->executeStatement(
+            <<<'SQL'
+                UPDATE video_tasks
+                   SET callback_attempted_at = :now
+                 WHERE id = :id
+                   AND callback_notified_at IS NULL
+                   AND (callback_attempted_at IS NULL OR callback_attempted_at < :before)
+                SQL,
+            ['now' => $now->toDateTimeImmutable(), 'before' => $before->toDateTimeImmutable(), 'id' => $id->value],
+            ['now' => Types::DATETIME_IMMUTABLE, 'before' => Types::DATETIME_IMMUTABLE, 'id' => ParameterType::STRING],
+        );
+
+        $this->forgetCachedCopy($id);
+
+        return 1 === $affected;
     }
 
     public function cancel(UuidValue $id, DateTimeValue $now): bool
@@ -344,6 +370,11 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
                 ->where('t.callbackUrl IS NOT NULL')
                 ->andWhere('t.callbackNotifiedAt IS NULL')
                 ->andWhere('t.updatedAt < :before')
+                // A notification this sweep already published is not lost yet:
+                // it waits out the same cutoff before being offered again, so a
+                // delivery the transport is still retrying is not published
+                // afresh by every run in the meantime.
+                ->andWhere('t.callbackAttemptedAt IS NULL OR t.callbackAttemptedAt < :before')
                 ->andWhere('t.status IN (:settled)')
                 ->orderBy('t.updatedAt', 'ASC')
                 ->setParameter('before', $before->toDateTimeImmutable())

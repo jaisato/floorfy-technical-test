@@ -146,6 +146,12 @@ final class TaskControllerTest extends ApiTestCase
         yield 'extra field' => [['images' => [['url' => 'https://example.com/a.png', 'transition' => 'pan', 'evil' => 1]]]];
         yield 'url is a list' => [['images' => [['url' => ['https://example.com/a.png'], 'transition' => 'pan']]]];
         yield 'element is not an object' => [['images' => ['https://example.com/a.png']]];
+        // A JSON object passes is_array() and every constraint under it, and
+        // the parts are then assembled in the order its members happen to sit
+        // in the document - so a client that numbered them gets its scenes in
+        // whatever order it typed them, with nothing said.
+        yield 'images is an object, not a list' => [['images' => ['2' => ['url' => 'https://example.com/b.png', 'transition' => 'pan'], '1' => ['url' => 'https://example.com/a.png', 'transition' => 'pan']]]];
+        yield 'images is an object with named keys' => [['images' => ['first' => ['url' => 'https://example.com/a.png', 'transition' => 'pan']]]];
     }
 
     #[DataProvider('invalidPayloads')]

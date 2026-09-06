@@ -725,9 +725,15 @@ docker compose exec php php bin/console app:tasks:recover --stuck-for=10m
 | `--dry-run` | enumera lo que reencolaría y no publica nada |
 | `--limit` | máximo de tareas de cada tipo por ejecución (100 por defecto) |
 
-Repetirlo es inofensivo: una tarea que ya se está procesando rechaza la
-reclamación, y una notificación ya entregada queda registrada en
-`callback_notified_at` y deja de aparecer. Reintentar la tarea borra esa marca:
+Repetirlo es inofensivo, y por el mismo motivo en los dos casos: cada mensaje se
+reclama antes de publicarse. Una tarea que ya se está procesando rechaza la
+reclamación; una notificación se marca en `callback_attempted_at` al publicarla,
+así que la barrida siguiente —con la entrega todavía en vuelo o reintentándose en
+el transporte— la deja en paz hasta que ese intento sea a su vez más antiguo que
+la ventana. Sin esa marca, «aún no entregada» se leía como «perdida» y el cliente
+recibía el mismo POST una vez por barrida. Una notificación ya entregada queda
+registrada en `callback_notified_at` y deja de aparecer. Reintentar la tarea borra
+ambas marcas:
 la ejecución nueva vuelve a terminar y debe su propia notificación, y con la
 marca de la anterior puesta ésa sería la única que este comando no podría
 recuperar nunca. La ventana importa: una tarea

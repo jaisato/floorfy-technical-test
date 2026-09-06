@@ -110,6 +110,24 @@ interface VideoTaskRepository
     public function listAwaitingCallback(DateTimeValue $before, int $limit): array;
 
     /**
+     * Takes the notification of a settled task for this sweep, so a run beside
+     * it - or the next one, while the transport is still retrying the delivery
+     * - leaves it alone.
+     *
+     * The condition is the listing's, applied again as an UPDATE: two sweeps
+     * both read the row as owed and only the one whose write lands publishes.
+     * Without it "not delivered yet" was read as "lost", and a delivery being
+     * retried was published afresh by every run, so the client got the same
+     * POST several times over.
+     *
+     * @param DateTimeValue $before the sweep's cutoff: an attempt older than
+     *                              this is stale and may be claimed again
+     *
+     * @return bool true when this caller took it
+     */
+    public function claimCallbackNotification(UuidValue $id, DateTimeValue $before, DateTimeValue $now): bool;
+
+    /**
      * Records that the callback for a task was delivered, so the sweep above
      * stops offering it.
      */
@@ -125,6 +143,10 @@ interface VideoTaskRepository
      * settled tasks whose callback was never delivered, and this row said it
      * had been. Cleared when the task is queued again, the sweep covers every
      * run the same way.
+     *
+     * The sweep's claim goes with it, for the same reason: the new run's
+     * notification must not wait out a cutoff because the previous run's was
+     * once attempted.
      */
     public function clearCallbackNotification(UuidValue $id): void;
 

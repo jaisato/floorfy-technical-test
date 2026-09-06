@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Task\Application\Recovery;
 
+use App\Shared\Application\Clock\Clock;
 use App\Shared\Domain\ValueObject\DateTimeValue;
 use App\Task\Application\Callback\NotifyTaskCallback;
 use App\Task\Application\Command\ProcessVideoTaskCommand;
@@ -40,6 +41,7 @@ final readonly class RecoverTasks
     public function __construct(
         private VideoTaskRepository $tasks,
         private MessageBusInterface $commandBus,
+        private Clock $clock,
         #[Autowire(service: 'monolog.logger.task')]
         private LoggerInterface $logger,
     ) {
@@ -63,6 +65,16 @@ final readonly class RecoverTasks
         }
 
         foreach ($this->tasks->listAwaitingCallback($before, $limit) as $task) {
+            // Claimed before publishing, exactly as a task claim works. A
+            // notification the transport is still retrying has not been
+            // delivered and has not been lost either; without the claim every
+            // sweep in between published another one and the client got the
+            // same POST again and again. A dry run claims nothing: it reports
+            // what a real run would do, and must leave the sweep able to do it.
+            if (!$dryRun && !$this->tasks->claimCallbackNotification($task->id(), $before, $this->clock->now())) {
+                continue;
+            }
+
             if (!$dryRun) {
                 $this->commandBus->dispatch(new NotifyTaskCallback($task->id()->value, $task->status()->value));
             }
