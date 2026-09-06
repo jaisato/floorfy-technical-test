@@ -1,0 +1,26 @@
+security:
+    # No user store: the callers are machines, identified by a shared secret
+    # listed in API_TOKENS. The provider is here because a firewall needs one;
+    # the authenticator builds the user itself.
+    providers:
+        api_clients:
+            memory: null
+
+    firewalls:
+        # Probes and the API description have no credentials to send, and the
+        # videos are protected by their signed URLs (a media player cannot set
+        # an Authorization header either). Everything else goes through the
+        # token check - which is a no-op while API_TOKENS is empty.
+        public:
+            pattern: ^/(health|videos/|api/doc)
+            security: false
+
+        main:
+            pattern: ^/
+            stateless: true
+            provider: api_clients
+            # Not lazy: the Idempotency-Key listener asks who the caller is on
+            # every POST, so the token would be resolved anyway, and a lazy
+            # firewall resolving it inside that listener is harder to follow.
+            lazy: false
+            custom_authenticator: App\Ui\Http\Security\ApiTokenAuthenticator

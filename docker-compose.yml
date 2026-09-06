@@ -25,6 +25,9 @@ x-app-environment: &app-environment
   TASK_LEASE_SECONDS: ${TASK_LEASE_SECONDS:-3600}
   # How long an Idempotency-Key sent with POST /api/tasks is remembered.
   IDEMPOTENCY_TTL_SECONDS: ${IDEMPOTENCY_TTL_SECONDS:-86400}
+  # API keys, "name:secret" pairs separated by commas. Empty leaves the API
+  # open, which is the default.
+  API_TOKENS: ${API_TOKENS:-}
 
 services:
   nginx:

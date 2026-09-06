@@ -344,6 +344,31 @@ un driver pone el host al que no pudo conectar —: eso va al log.
 Se sirven directamente por nginx bajo `/videos/`, con caché larga: el nombre
 lleva el id, así que el fichero es inmutable.
 
+### Autenticación (opcional)
+
+Desactivada por defecto: `API_TOKENS` vacío deja la API abierta, que es lo que
+esperan las instrucciones de la prueba. Con valor, la forma es
+`nombre:secreto,otro:secreto` (secretos de **16 caracteres como mínimo**), y a
+partir de ahí toda petición necesita una credencial:
+
+```bash
+curl -H 'Authorization: Bearer <secreto>' http://localhost:8080/api/tasks
+curl -H 'X-API-Key: <secreto>'            http://localhost:8080/api/tasks
+```
+
+- Sin credencial, o con una que no existe: **401** `problem+json` con
+  `WWW-Authenticate`. **El mismo cuerpo en los dos casos**: distinguir «no has
+  mandado clave» de «esa clave no existe» es un oráculo.
+- El **nombre** del cliente no viaja: es lo que el secreto resuelve, y es lo que
+  se usa como *scope* de sus [`Idempotency-Key`](#idempotencia-idempotency-key)
+  y en el log.
+- Quedan públicos `/health`, `/health/ready`, `/api/doc.json` y `/videos/…` —
+  un *prober* no tiene token y un reproductor de vídeo no puede mandar
+  cabeceras. Los vídeos se protegen con [URLs firmadas](#vídeos).
+- Una configuración mal escrita (sin `:`, secreto corto, dos clientes con el
+  mismo secreto) es un error de arranque, no un despliegue silenciosamente
+  abierto.
+
 ### Salud (`/health`, `/health/ready`)
 
 Dos preguntas distintas, con dos respuestas distintas — mezclarlas es lo que
@@ -400,6 +425,7 @@ que está en `.gitignore`.
 | `CALLBACK_SIGNING_SECRET` | clave HMAC de `X-Task-Signature`; una por despliegue, sin ella no se envían notificaciones |
 | `APP_URL` | URL pública de la API; con ella se construyen las URLs de vídeo |
 | `DEFAULT_URI` | base para generar URLs fuera de una petición HTTP |
+| `API_TOKENS` | claves de API `nombre:secreto,…`; **vacío = API abierta** (por defecto) |
 | `TASK_LEASE_SECONDS` | cuánto puede estar una tarea en `processing` antes de que otro worker pueda tomarla |
 | `IDEMPOTENCY_TTL_SECONDS` | cuánto se recuerda una `Idempotency-Key` (24 h por defecto) |
 | `FFMPEG_ANIMATE_TIMEOUT`, `FFMPEG_COMPOSE_TIMEOUT` | presupuesto por invocación de FFmpeg (segundos) |
