@@ -16,6 +16,19 @@ interface VideoTaskRepository
     public function get(UuidValue $id): ?VideoTask;
 
     /**
+     * Reads a task and holds its row until the caller's transaction ends.
+     *
+     * For the one caller that decides something from a task's state and then
+     * spends time acting on it outside the database: the retention job reads
+     * "failed, nothing running", deletes the files, and writes prunedAt. A
+     * retry landing in that gap turns the files it deleted into the input of a
+     * run already under way. Every other writer here settles its race with a
+     * conditional UPDATE; this one cannot, because what it has to keep still is
+     * not a column but the seconds it spends unlinking.
+     */
+    public function getForUpdate(UuidValue $id): ?VideoTask;
+
+    /**
      * Takes exclusive ownership of a task for one processing attempt.
      *
      * Reading the row and then writing "processing" back is not enough: two
@@ -101,6 +114,19 @@ interface VideoTaskRepository
      * stops offering it.
      */
     public function markCallbackNotified(UuidValue $id, DateTimeValue $now): void;
+
+    /**
+     * Forgets that a callback was ever delivered for this task.
+     *
+     * One timestamp per task, and a task can settle more than once: the run
+     * that is retried settles again and owes the client another notification.
+     * With the mark left over from the first run, that second notification was
+     * the one publish the recovery sweep could never find - it looks for
+     * settled tasks whose callback was never delivered, and this row said it
+     * had been. Cleared when the task is queued again, the sweep covers every
+     * run the same way.
+     */
+    public function clearCallbackNotification(UuidValue $id): void;
 
     /**
      * Writes the cancellation, but only over a task that is still pending or

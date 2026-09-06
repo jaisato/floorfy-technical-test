@@ -45,11 +45,15 @@ final readonly class CreateTaskRateLimitListener
     }
 
     /**
-     * After the router and the firewall, so both the route and the caller are
-     * known, and before the Idempotency-Key listener claims a key for a request
-     * that is about to be refused.
+     * Below the firewall's 8, so the caller is authenticated and the window is
+     * the client's own rather than everyone behind one address - at 8 this ran
+     * *before* the firewall, registration order deciding it, and every
+     * authenticated caller was counted by IP - and below the Idempotency-Key
+     * listener's 4, so a replay, which creates nothing, spends nothing. A
+     * request that gets this far is one that would create a task; the key
+     * claimed for it is released again when this refuses it.
      */
-    #[AsEventListener(event: KernelEvents::REQUEST, priority: 8)]
+    #[AsEventListener(event: KernelEvents::REQUEST, priority: 2)]
     public function __invoke(RequestEvent $event): void
     {
         $request = $event->getRequest();

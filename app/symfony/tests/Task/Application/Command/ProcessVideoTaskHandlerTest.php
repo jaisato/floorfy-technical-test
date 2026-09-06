@@ -336,6 +336,38 @@ final class ProcessVideoTaskHandlerTest extends TestCase
     }
 
     /**
+     * Only a published file leaves staging, so what a failed render wrote there
+     * stays: nothing reads that name again, nothing serves it, and the next
+     * attempt writes a fresh one. On a busy deployment that is one truncated
+     * video per failure, on the volume the finished ones live on.
+     */
+    public function testAFailedCompositionTakesItsHalfWrittenFileWithIt(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+        $this->composer->failWith(new \RuntimeException('concat failed'));
+
+        try {
+            $this->handle($task);
+        } catch (TaskProcessingFailed) {
+        }
+
+        self::assertSame([], glob($this->dir->file('videos/.staging').'/*') ?: []);
+    }
+
+    public function testAFailedClipTakesItsHalfWrittenFileWithIt(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+        $this->animator->failWith(new \RuntimeException('ffmpeg died'));
+
+        try {
+            $this->handle($task);
+        } catch (\Throwable) {
+        }
+
+        self::assertSame([], glob($this->dir->file('videos/.staging').'/*') ?: []);
+    }
+
+    /**
      * A misconfigured volume is a deployment problem, not a bad request: it is
      * reported, the claim goes back, and the retries get their chance.
      */

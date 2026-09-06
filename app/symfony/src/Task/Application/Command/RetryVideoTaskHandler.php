@@ -78,5 +78,10 @@ final readonly class RetryVideoTaskHandler
         }
 
         $this->tasks->save($task);
+
+        // The delivery mark belongs to the run that produced it. This run owes
+        // the client a notification of its own, and the recovery sweep can only
+        // find a lost one while the mark is empty.
+        $this->tasks->clearCallbackNotification($task->id());
     }
 }

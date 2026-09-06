@@ -13,6 +13,7 @@ use App\Tests\Support\FixedClock;
 use App\Tests\Support\InMemoryPartialVideoRepository;
 use App\Tests\Support\InMemoryVideoTaskRepository;
 use App\Tests\Support\RecordingLogger;
+use App\Tests\Support\SpyTransaction;
 use App\Tests\Support\TempDirectory;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
@@ -242,18 +243,123 @@ final class PruneVideosTest extends TestCase
         self::assertSame([], $logger->records);
     }
 
+    /**
+     * The listing and the deletion are not one instant. A retry landing between
+     * them turns these files into the input of a run already under way: the
+     * completed parts the new attempt reuses, and the output it is writing. The
+     * task is read again under its row lock, and one that has moved is left
+     * alone - files, prunedAt and all.
+     */
+    public function testATaskRetriedBetweenTheListingAndTheLockIsLeftAlone(): void
+    {
+        $task = $this->failedTask('2026-01-01T00:00:00+00:00');
+        $part = $this->partOf($task);
+        $final = $this->videoFile('final_'.$task->id()->value.'.mp4');
+        $clip = $this->videoFile('partial_'.$part->id()->value.'.mp4');
+
+        $this->tasks->beforeLockedRead = function () use ($task): void {
+            $task->retry($this->clock->now());
+        };
+
+        $report = $this->prune()->run($this->cutoff());
+
+        self::assertFileExists($final, 'the run in progress still needs its output');
+        self::assertFileExists($clip, 'and the part it was about to reuse');
+        self::assertSame([], $report->taskIds);
+        self::assertSame(0, $report->files);
+        self::assertNull($task->prunedAt());
+    }
+
+    /**
+     * The row lock and the deletion have to be the same transaction. Read the
+     * task in one and unlink in another and the lock is released before the
+     * first file goes, which is every bit as open as not locking at all.
+     */
+    public function testTheTaskIsReadAndItsFilesDeletedInsideOneTransaction(): void
+    {
+        $task = $this->settledTask('2026-01-01T00:00:00+00:00');
+        $this->videoFile('final_'.$task->id()->value.'.mp4');
+        $transaction = new SpyTransaction();
+        $inside = false;
+
+        $this->tasks->beforeLockedRead = static function () use ($transaction, &$inside): void {
+            $inside = $transaction->running;
+        };
+
+        $this->prune(transaction: $transaction)->run($this->cutoff());
+
+        self::assertTrue($inside, 'the locked read happens inside the transaction');
+        self::assertNotNull($task->prunedAt());
+    }
+
+    /**
+     * Two runs of the job overlapping: the second finds a task the first has
+     * already dealt with, and must not report it a second time.
+     */
+    public function testATaskPrunedBetweenTheListingAndTheLockIsNotCountedTwice(): void
+    {
+        $task = $this->settledTask('2026-01-01T00:00:00+00:00');
+        $this->videoFile('final_'.$task->id()->value.'.mp4');
+
+        $this->tasks->beforeLockedRead = function () use ($task): void {
+            $task->markPruned($this->clock->now());
+        };
+
+        self::assertSame([], $this->prune()->run($this->cutoff())->taskIds);
+    }
+
+    /**
+     * A worker that is killed mid-render cannot unlink what ffmpeg had already
+     * written, and the staging directory is not served, not read and never
+     * looked at again: whatever lands there stays until this removes it.
+     */
+    public function testStaleFilesLeftInStagingAreRemoved(): void
+    {
+        $stale = $this->stagedFile('final_dead-worker.mp4', '2026-01-01T00:00:00+00:00');
+
+        $report = $this->prune()->run($this->cutoff());
+
+        self::assertFileDoesNotExist($stale);
+        self::assertSame(1, $report->files);
+        self::assertSame(\strlen('half a video'), $report->bytes);
+    }
+
+    /** A render under way writes into staging too, and it is not debris. */
+    public function testAFileBeingWrittenRightNowIsLeftInStaging(): void
+    {
+        $fresh = $this->stagedFile('final_in-flight.mp4', '2026-02-28T23:59:00+00:00');
+
+        $report = $this->prune()->run($this->cutoff());
+
+        self::assertFileExists($fresh);
+        self::assertSame(0, $report->files);
+    }
+
+    /** A dry run says what would go without touching any of it. */
+    public function testADryRunLeavesStagingAlone(): void
+    {
+        $stale = $this->stagedFile('final_dead-worker.mp4', '2026-01-01T00:00:00+00:00');
+
+        $report = $this->prune()->run($this->cutoff(), dryRun: true);
+
+        self::assertFileExists($stale);
+        self::assertSame(1, $report->files);
+        self::assertTrue($report->dryRun);
+    }
+
     /** Two months back: everything older than that is out of the window. */
     private function cutoff(): DateTimeValue
     {
         return $this->clock->now()->minusSeconds(30 * 86400);
     }
 
-    private function prune(?RecordingLogger $logger = null): PruneVideos
+    private function prune(?RecordingLogger $logger = null, ?SpyTransaction $transaction = null): PruneVideos
     {
         return new PruneVideos(
             $this->tasks,
             $this->partials,
             $this->clock,
+            $transaction ?? new SpyTransaction(),
             $this->dir->file('videos'),
             $this->dir->file('work'),
             $logger ?? new NullLogger(),
@@ -271,6 +377,18 @@ final class PruneVideosTest extends TestCase
         return $task;
     }
 
+    /** A task whose run ended in failure: settled, so the job may take it. */
+    private function failedTask(string $finishedAt): VideoTask
+    {
+        $at = DateTimeValue::fromString($finishedAt);
+        $task = VideoTask::create(['images' => []], $at);
+        $task->markProcessing($at);
+        $task->markFailed('ffmpeg se rindió', $at);
+        $this->tasks->save($task);
+
+        return $task;
+    }
+
     private function partOf(VideoTask $task): PartialVideo
     {
         $at = $task->updatedAt();
@@ -279,6 +397,22 @@ final class PruneVideosTest extends TestCase
         $this->partials->save($part);
 
         return $part;
+    }
+
+    /** A file in the worker's staging directory, last written at $modifiedAt. */
+    private function stagedFile(string $name, string $modifiedAt): string
+    {
+        $directory = $this->dir->file('videos').'/.staging';
+
+        if (!is_dir($directory)) {
+            mkdir($directory, 0o775, true);
+        }
+
+        $file = $directory.'/'.$name;
+        file_put_contents($file, 'half a video');
+        touch($file, DateTimeValue::fromString($modifiedAt)->toDateTimeImmutable()->getTimestamp());
+
+        return $file;
     }
 
     private function videoFile(string $name, string $contents = 'video'): string
