@@ -18,6 +18,7 @@ use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
 use Symfony\Component\HttpKernel\Event\ResponseEvent;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
+use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorage;
 
 /**
  * The listener alone, with the store in memory: which requests it intercepts,
@@ -35,7 +36,7 @@ final class IdempotencyKeyListenerTest extends TestCase
     {
         $this->store = new InMemoryIdempotencyStore();
         $this->clock = new FixedClock();
-        $this->listener = new IdempotencyKeyListener($this->store, new RequestActor(), $this->clock, self::TTL);
+        $this->listener = new IdempotencyKeyListener($this->store, new RequestActor(new TokenStorage()), $this->clock, self::TTL);
     }
 
     public function testARequestWithoutTheHeaderIsLeftAlone(): void
