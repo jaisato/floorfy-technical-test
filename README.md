@@ -17,12 +17,23 @@ La ejecución pesada (descarga de imágenes + FFmpeg) se hace en segundo plano c
 - [Servicios y puertos](#servicios-y-puertos)
 - [Cómo funciona](#cómo-funciona)
 - [API](#api)
+  - [Endpoints](#endpoints)
+  - [Opciones de render](#opciones-de-render)
+  - [Idempotencia](#idempotencia-idempotency-key)
+  - [Webhook](#webhook)
+  - [OpenAPI](#openapi)
+  - [Errores](#errores)
+  - [Vídeos y URLs firmadas](#vídeos)
+  - [Autenticación](#autenticación-opcional)
+  - [Límite de creación](#límite-de-creación-opcional)
+  - [Salud](#salud-health-healthready)
 - [Variables de entorno](#variables-de-entorno)
 - [Desarrollo sin Docker](#desarrollo-sin-docker)
 - [Tests](#tests)
 - [Calidad](#calidad)
 - [Integración continua](#integración-continua)
 - [Operación](#operación)
+  - [Retención de vídeos](#retención-de-vídeos)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -104,7 +115,8 @@ POST /api/tasks
       │  2. por cada parte: descarga la imagen (con guardia SSRF) y la anima con
       │     FFmpeg hacia un directorio de staging
       │  3. publica cada clip con rename() -> public/videos/partial_<id>.mp4
-      │  4. concatena los clips y publica public/videos/final_<task>.mp4
+      │  4. concatena los clips (corte seco o xfade) y publica
+      │     public/videos/final_<task>.mp4
       ▼
 GET /api/tasks               listado paginado con filtros
 GET /api/tasks/{id}          estado y progreso de la tarea y de cada parte
@@ -138,6 +150,8 @@ Puntos que merece la pena conocer:
 - **Escritura atómica.** Los vídeos se escriben en `public/videos/.staging/` y se
   mueven con `rename()`, así que un cliente nunca recibe un fichero a medias
   (nginx además deniega cualquier ruta con punto inicial).
+- **Retención.** Nada borra ficheros solo: `app:videos:prune` es un trabajo de
+  cron (ver [Retención de vídeos](#retención-de-vídeos)).
 - **SSRF.** Las URLs de imagen vienen de fuera, así que se resuelven y validan
   contra el espacio de direcciones público (IPv4 e IPv6), sólo por los puertos 80
   y 443, cada redirección se revalida y la conexión se fija a la dirección ya
@@ -147,6 +161,20 @@ Puntos que merece la pena conocer:
 ---
 
 ## API
+
+### Endpoints
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| `POST` | `/api/tasks` | crea una tarea (201); acepta `Idempotency-Key` |
+| `GET` | `/api/tasks` | listado paginado con filtros y cabecera `Link` |
+| `GET` | `/api/tasks/{id}` | estado, progreso y partes |
+| `GET` | `/api/tasks/{id}/final` | URL del vídeo final |
+| `DELETE` | `/api/tasks/{id}` | cancela una tarea pendiente o en curso (200) |
+| `POST` | `/api/tasks/{id}/retry` | reencola una fallida o cancelada (202) |
+| `GET` | `/api/doc.json` | documento OpenAPI 3 (público) |
+| `GET` | `/videos/{nombre}` | sirve un vídeo (firmado si hay `VIDEO_URL_SECRET`) |
+| `GET` | `/health`, `/health/ready` | liveness y readiness (públicos) |
 
 ### `POST /api/tasks`
 
