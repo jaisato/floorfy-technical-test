@@ -60,7 +60,7 @@ final class TaskRenderOptionsTest extends ApiTestCase
         self::assertSame(0.25, $options->crossfade);
         self::assertSame(
             [8.5],
-            array_map('floatval', $this->connection()->fetchFirstColumn(
+            array_map(floatval(...), $this->connection()->fetchFirstColumn(
                 'SELECT duration_seconds FROM partial_videos WHERE task_id = ? ORDER BY position',
                 [$taskId],
             )),
