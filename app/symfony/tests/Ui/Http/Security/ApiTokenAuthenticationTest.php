@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Tests\Ui\Http\Security;
 
+use App\Tests\Support\OverridesEnvironment;
 use App\Ui\Http\Response\ApiProblem;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
@@ -19,6 +20,8 @@ use Symfony\Component\HttpFoundation\Response;
  */
 final class ApiTokenAuthenticationTest extends WebTestCase
 {
+    use OverridesEnvironment;
+
     private const string SECRET = 'a-secret-of-at-least-16';
     private const string TOKENS = 'web:'.self::SECRET;
 
@@ -28,7 +31,7 @@ final class ApiTokenAuthenticationTest extends WebTestCase
     {
         parent::tearDown();
 
-        unset($_ENV['API_TOKENS'], $_SERVER['API_TOKENS']);
+        $this->restoreEnvironment();
     }
 
     /** The default. Nothing about this feature may change an open deployment. */
@@ -186,8 +189,7 @@ final class ApiTokenAuthenticationTest extends WebTestCase
 
     private function clientWithTokens(string $tokens): void
     {
-        $_ENV['API_TOKENS'] = $tokens;
-        $_SERVER['API_TOKENS'] = $tokens;
+        $this->overrideEnv('API_TOKENS', $tokens);
 
         $this->client = self::createClient();
     }

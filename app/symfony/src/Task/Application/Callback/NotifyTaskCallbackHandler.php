@@ -6,6 +6,7 @@ namespace App\Task\Application\Callback;
 
 use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Application\DTO\VideoTaskSummaryView;
+use App\Task\Application\Url\VideoUrls;
 use App\Task\Domain\Port\PartialVideoRepository;
 use App\Task\Domain\Port\VideoTaskRepository;
 use Psr\Log\LoggerInterface;
@@ -32,6 +33,7 @@ final readonly class NotifyTaskCallbackHandler
         private VideoTaskRepository $tasks,
         private PartialVideoRepository $partials,
         private CallbackDelivery $delivery,
+        private VideoUrls $urls,
         #[Autowire(service: 'monolog.logger.task')]
         private LoggerInterface $logger,
     ) {
@@ -53,7 +55,7 @@ final readonly class NotifyTaskCallbackHandler
             return;
         }
 
-        $summary = VideoTaskSummaryView::fromTask($task, $this->partials->listByTaskId($id));
+        $summary = VideoTaskSummaryView::fromTask($task, $this->partials->listByTaskId($id), $this->urls->absolute($task->finalVideoUrl()));
 
         try {
             $this->delivery->deliver(new CallbackRequest($url, $id->value, $message->event, $summary->toArray()));

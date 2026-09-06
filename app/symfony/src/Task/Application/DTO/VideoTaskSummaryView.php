@@ -30,15 +30,19 @@ final readonly class VideoTaskSummaryView
      * The summary of a task as the write side holds it. The listing builds the
      * same shape from SQL; a test pins the two against each other.
      *
+     * The task holds the *path* of its video, not a URL: turning that into an
+     * address - with a signature, where one is configured - is the caller's
+     * job, because it depends on how the request arrived and on the clock.
+     *
      * @param list<PartialVideo> $partials
      */
-    public static function fromTask(VideoTask $task, array $partials): self
+    public static function fromTask(VideoTask $task, array $partials, ?string $finalVideoUrl): self
     {
         return new self(
             $task->id()->value,
             $task->status()->value,
             TaskProgress::ofParts($partials),
-            $task->finalVideoUrl(),
+            $finalVideoUrl,
             $task->errorMessage(),
             $task->callbackUrl(),
             $task->createdAt()->toIso8601(),

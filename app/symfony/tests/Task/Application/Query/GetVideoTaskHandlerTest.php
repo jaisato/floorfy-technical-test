@@ -7,9 +7,11 @@ namespace App\Tests\Task\Application\Query;
 use App\Shared\Domain\ValueObject\DateTimeValue;
 use App\Task\Application\Query\GetVideoTaskHandler;
 use App\Task\Application\Query\GetVideoTaskQuery;
+use App\Task\Application\Url\VideoUrls;
 use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\Enum\Transition;
+use App\Tests\Support\FixedClock;
 use App\Tests\Support\InMemoryPartialVideoRepository;
 use App\Tests\Support\InMemoryVideoTaskRepository;
 use PHPUnit\Framework\TestCase;
@@ -141,7 +143,7 @@ final class GetVideoTaskHandlerTest extends TestCase
     {
         $task = VideoTask::create(['images' => []], $this->now);
         $task->markProcessing($this->now);
-        $task->markCompleted('http://localhost:8080/videos/final.mp4', $this->now);
+        $task->markCompleted('/videos/final.mp4', $this->now);
         $this->tasks->save($task);
 
         $view = ($this->handler())(new GetVideoTaskQuery($task->id()->value));
@@ -168,6 +170,6 @@ final class GetVideoTaskHandlerTest extends TestCase
 
     private function handler(): GetVideoTaskHandler
     {
-        return new GetVideoTaskHandler($this->tasks, $this->partials, 'http://localhost:8080/');
+        return new GetVideoTaskHandler($this->tasks, $this->partials, new VideoUrls(new FixedClock(), 'http://localhost:8080/', '', 3600));
     }
 }

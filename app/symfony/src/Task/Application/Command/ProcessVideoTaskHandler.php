@@ -9,6 +9,7 @@ use App\Shared\Domain\Exception\ClientSafe;
 use App\Shared\Domain\Exception\HasOperatorDetail;
 use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Application\Callback\TaskCallbacks;
+use App\Task\Application\Url\VideoUrls;
 use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\Enum\VideoTaskStatus;
@@ -56,8 +57,6 @@ final readonly class ProcessVideoTaskHandler
         private TaskCallbacks $callbacks,
         #[Autowire(param: 'app.videos_dir')]
         private string $videosDir,
-        #[Autowire(param: 'app.public_base_url')]
-        private string $publicBaseUrl,
         #[Autowire(param: 'app.task_lease_seconds')]
         private int $leaseSeconds,
         #[Autowire(service: 'monolog.logger.task')]
@@ -182,7 +181,9 @@ final readonly class ProcessVideoTaskHandler
 
         self::publish($staged, $this->videosDir.'/'.$name);
 
-        $task->markCompleted(rtrim($this->publicBaseUrl, '/').'/videos/'.$name, $this->clock->now());
+        // The path, not a URL: the address a client is given is built when it
+        // is asked for, so it follows the deployment and can carry a signature.
+        $task->markCompleted(VideoUrls::PREFIX.$name, $this->clock->now());
         $this->tasks->save($task);
         $this->callbacks->notify($task);
 
@@ -225,7 +226,7 @@ final readonly class ProcessVideoTaskHandler
 
         self::publish($staged, $published);
 
-        $partial->markCompleted('/videos/'.$name, $this->clock->now());
+        $partial->markCompleted(VideoUrls::PREFIX.$name, $this->clock->now());
         $this->partials->save($partial);
 
         return $published;

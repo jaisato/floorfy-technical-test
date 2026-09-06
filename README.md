@@ -341,8 +341,40 @@ un driver pone el host al que no pudo conectar —: eso va al log.
 
 ### Vídeos
 
-Se sirven directamente por nginx bajo `/videos/`, con caché larga: el nombre
-lleva el id, así que el fichero es inmutable.
+`GET /videos/{nombre}` sirve un vídeo generado. La ruta sólo admite los dos
+nombres que produce la aplicación (`partial_<uuid>.mp4`, `final_<uuid>.mp4`), así
+que ninguna petición puede nombrar un fichero cualquiera.
+
+**Sin `VIDEO_URL_SECRET`** (por defecto) no se comprueba nada y la respuesta se
+cachea 30 días: el nombre lleva el id, el fichero es inmutable.
+
+**Con `VIDEO_URL_SECRET`** cada URL que devuelve la API va firmada y caduca:
+
+```
+http://localhost:8080/videos/final_0195….mp4?expires=1767322800&sig=<hmac-sha256>
+```
+
+La firma es un HMAC-SHA256 sobre la ruta **y** el plazo, así que un enlace no se
+puede editar para apuntar a otro vídeo ni para durar más, y deja de funcionar
+solo (`VIDEO_URL_TTL_SECONDS`, 1 h por defecto). Un enlace inválido o caducado es
+un **403**, no un 404: el vídeo probablemente existe, y decir lo contrario manda
+al cliente a buscar una tarea perdida. **Actívalo siempre que actives
+`API_TOKENS`**: si no, los vídeos de una API autenticada siguen siendo legibles
+por cualquiera que tenga el enlace, y la URL es lo único que puede llevar una
+etiqueta `<video>` — no puede mandar una cabecera `Authorization`.
+
+Por qué en la aplicación y no con `secure_link` de nginx: así la comprobación
+está cubierta por la suite, es idéntica en todos los despliegues y responde en
+`problem+json` como el resto de la API. Lo que `secure_link` habría ahorrado —
+tener un proceso de PHP ocupado durante toda la descarga — se evita igual: con
+`VIDEOS_X_ACCEL_PREFIX` puesto (lo pone el compose) el controlador responde con
+`X-Accel-Redirect` y **nginx** manda los bytes desde una *location* `internal`,
+que el exterior no puede pedir. Sin esa variable (la suite, `symfony server`)
+los manda PHP.
+
+La tarea guarda la **ruta** del vídeo, no una URL: una URL en la base de datos
+congela el host del día en que se renderizó y no puede llevar una firma que
+caduque. La dirección se construye al pedirla.
 
 ### Autenticación (opcional)
 
@@ -426,6 +458,9 @@ que está en `.gitignore`.
 | `APP_URL` | URL pública de la API; con ella se construyen las URLs de vídeo |
 | `DEFAULT_URI` | base para generar URLs fuera de una petición HTTP |
 | `API_TOKENS` | claves de API `nombre:secreto,…`; **vacío = API abierta** (por defecto) |
+| `VIDEO_URL_SECRET` | clave HMAC de las URLs firmadas de `/videos/`; vacío = sin firmar |
+| `VIDEO_URL_TTL_SECONDS` | validez de una URL firmada (1 h por defecto) |
+| `VIDEOS_X_ACCEL_PREFIX` | *location* interna de nginx a la que se delega el envío del fichero; vacío = lo manda PHP |
 | `TASK_LEASE_SECONDS` | cuánto puede estar una tarea en `processing` antes de que otro worker pueda tomarla |
 | `IDEMPOTENCY_TTL_SECONDS` | cuánto se recuerda una `Idempotency-Key` (24 h por defecto) |
 | `FFMPEG_ANIMATE_TIMEOUT`, `FFMPEG_COMPOSE_TIMEOUT` | presupuesto por invocación de FFmpeg (segundos) |

@@ -28,6 +28,14 @@ x-app-environment: &app-environment
   # API keys, "name:secret" pairs separated by commas. Empty leaves the API
   # open, which is the default.
   API_TOKENS: ${API_TOKENS:-}
+  # HMAC key for the signed video URLs, and how long one stays valid. Empty
+  # serves the videos unsigned; set it whenever API_TOKENS is set, or the
+  # videos of an authenticated API stay readable by anyone with the link.
+  VIDEO_URL_SECRET: ${VIDEO_URL_SECRET:-}
+  VIDEO_URL_TTL_SECONDS: ${VIDEO_URL_TTL_SECONDS:-3600}
+  # nginx serves the video files from this internal location once the
+  # application has checked the signature, so PHP never carries the bytes.
+  VIDEOS_X_ACCEL_PREFIX: /protected-videos
 
 services:
   nginx:

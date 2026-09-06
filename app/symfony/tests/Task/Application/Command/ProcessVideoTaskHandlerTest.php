@@ -67,10 +67,8 @@ final class ProcessVideoTaskHandlerTest extends TestCase
         $this->handle($task);
 
         self::assertSame(VideoTaskStatus::COMPLETED, $task->status());
-        self::assertSame(
-            'http://localhost:8080/videos/final_'.$task->id()->value.'.mp4',
-            $task->finalVideoUrl(),
-        );
+        // The path, not a URL: the address is built when a client asks for it.
+        self::assertSame('/videos/final_'.$task->id()->value.'.mp4', $task->finalVideoUrl());
         self::assertFileExists($this->dir->file('videos/final_'.$task->id()->value.'.mp4'));
 
         foreach ($this->partials->listByTaskId($task->id()) as $partial) {
@@ -493,7 +491,6 @@ final class ProcessVideoTaskHandlerTest extends TestCase
             $this->composer,
             new TaskCallbacks($this->bus),
             $videosDir,
-            'http://localhost:8080',
             self::LEASE_SECONDS,
             new NullLogger(),
         );
