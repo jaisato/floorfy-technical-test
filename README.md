@@ -167,6 +167,44 @@ Puntos que merece la pena conocer:
   públicas; cualquier otra cosa es un **400**.
 - **201** `{"task_id": "...", "status": "pending"}`
 - **400** un documento `application/problem+json` (ver [Errores](#errores)).
+- Acepta la cabecera `Idempotency-Key` (ver
+  [Idempotencia](#idempotencia-idempotency-key)).
+
+### Idempotencia (`Idempotency-Key`)
+
+`POST /api/tasks` no es idempotente por sí mismo: si la respuesta se pierde (un
+timeout, una conexión cortada), el cliente no sabe si la tarea se creó, y
+reintentar crea un segundo vídeo. Con una cabecera `Idempotency-Key` elegida por
+el cliente (1–255 caracteres ASCII imprimibles, típicamente un UUID) el reintento
+es seguro:
+
+| Situación | Respuesta |
+|---|---|
+| Primera petición con esa clave | la normal (201, o el error que corresponda) |
+| **Misma clave, mismo cuerpo** | la **misma respuesta guardada**, con `Idempotency-Replayed: true`; no se crea nada |
+| Misma clave, **cuerpo distinto** | **422**: una clave nombra una sola petición |
+| Misma clave mientras la primera petición **sigue en curso** | **409** |
+| Clave vacía, demasiado larga o con caracteres no imprimibles | **400** |
+
+Detalles que conviene conocer:
+
+- «Mismo cuerpo» se decide por una huella SHA-256 de método, ruta y cuerpo
+  **canonicalizado**: en un objeto JSON el orden de las claves no cuenta (dos
+  serializaciones del mismo objeto son la misma petición), pero el orden de una
+  lista sí (son otras imágenes).
+- Se guarda cualquier respuesta por debajo de 500, **incluidos los 400**: repetir
+  una petición inválida bajo la misma clave devuelve el mismo error, no una tarea.
+  Un 5xx **libera** la clave: el fallo es nuestro y el reintento tiene que
+  ejecutarse de verdad.
+- Las claves se guardan **por llamante**, así que dos clientes no pueden
+  colisionar eligiendo la misma. Sin autenticación todos los llamantes son el
+  mismo (`anonymous`).
+- Caducan a los `IDEMPOTENCY_TTL_SECONDS` (24 h por defecto). Los registros
+  caducados se borran en cada reclamación, así que la tabla `idempotency_keys` no
+  necesita ningún cron.
+- La reclamación es un `INSERT` sobre la clave primaria `(scope, key)`: dos
+  peticiones simultáneas compiten en la base de datos y sólo una gana. No hay
+  ningún «leer y luego escribir» que pueda cruzarse.
 
 ### `GET /api/tasks`
 
@@ -327,6 +365,7 @@ que está en `.gitignore`.
 | `APP_URL` | URL pública de la API; con ella se construyen las URLs de vídeo |
 | `DEFAULT_URI` | base para generar URLs fuera de una petición HTTP |
 | `TASK_LEASE_SECONDS` | cuánto puede estar una tarea en `processing` antes de que otro worker pueda tomarla |
+| `IDEMPOTENCY_TTL_SECONDS` | cuánto se recuerda una `Idempotency-Key` (24 h por defecto) |
 | `FFMPEG_ANIMATE_TIMEOUT`, `FFMPEG_COMPOSE_TIMEOUT` | presupuesto por invocación de FFmpeg (segundos) |
 | `FFMPEG_THREADS` | tope de hilos de FFmpeg (`0` = automático) |
 

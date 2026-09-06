@@ -1,0 +1,49 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Shared\Infrastructure\Persistence\Doctrine\Entity;
+
+use Doctrine\DBAL\Types\Types;
+use Doctrine\ORM\Mapping as ORM;
+
+/**
+ * One Idempotency-Key a caller used, with the request it named and the answer
+ * it got. Mapped so that the test schema, which is built from the mapping,
+ * carries the table; the store itself works through DBAL.
+ */
+#[ORM\Entity]
+#[ORM\Table(name: 'idempotency_keys')]
+// The purge of expired keys runs on every claim.
+#[ORM\Index(columns: ['expires_at'], name: 'idx_idempotency_keys_expires_at')]
+class IdempotencyKeyEntity
+{
+    /** Who used the key: the authenticated client, or "anonymous". */
+    #[ORM\Id]
+    #[ORM\Column(type: Types::STRING, length: 190)]
+    public string $scope;
+
+    #[ORM\Id]
+    #[ORM\Column(name: 'idempotency_key', type: Types::STRING, length: 255)]
+    public string $idempotencyKey;
+
+    /** SHA-256 of method, path and canonical body. */
+    #[ORM\Column(type: Types::STRING, length: 64)]
+    public string $fingerprint;
+
+    /** Null while the original request is still running. */
+    #[ORM\Column(name: 'response_status', type: Types::SMALLINT, nullable: true)]
+    public ?int $responseStatus = null;
+
+    #[ORM\Column(name: 'response_content_type', type: Types::STRING, length: 255, nullable: true)]
+    public ?string $responseContentType = null;
+
+    #[ORM\Column(name: 'response_body', type: Types::TEXT, nullable: true)]
+    public ?string $responseBody = null;
+
+    #[ORM\Column(name: 'created_at', type: Types::DATETIME_IMMUTABLE)]
+    public \DateTimeImmutable $createdAt;
+
+    #[ORM\Column(name: 'expires_at', type: Types::DATETIME_IMMUTABLE)]
+    public \DateTimeImmutable $expiresAt;
+}

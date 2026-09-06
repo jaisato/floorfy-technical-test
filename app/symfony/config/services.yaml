@@ -15,6 +15,10 @@ parameters:
     # allowed to take it over, for the case where the first one was killed.
     app.task_lease_seconds: '%env(int:TASK_LEASE_SECONDS)%'
 
+    # How long an Idempotency-Key is remembered; a key reused after that starts
+    # a new request.
+    app.idempotency_ttl_seconds: '%env(int:IDEMPOTENCY_TTL_SECONDS)%'
+
     app.ffmpeg_animate_timeout: '%env(int:FFMPEG_ANIMATE_TIMEOUT)%'
     app.ffmpeg_compose_timeout: '%env(int:FFMPEG_COMPOSE_TIMEOUT)%'
     app.ffmpeg_threads: '%env(int:FFMPEG_THREADS)%'
@@ -37,6 +41,7 @@ services:
             - '../src/Kernel.php'
             - '../src/Shared/Domain/Exception/'
             - '../src/Shared/Domain/ValueObject/'
+            - '../src/Shared/Infrastructure/Persistence/Doctrine/Entity/'
             - '../src/Shared/Infrastructure/Process/ProcessResult.php'
             - '../src/Task/Application/Callback/CallbackDeliveryFailed.php'
             - '../src/Task/Application/Callback/CallbackRequest.php'
@@ -53,6 +58,10 @@ services:
             - '../src/Task/Domain/'
             - '../src/Task/Infrastructure/Persistence/Doctrine/Entity/'
             - '../src/Task/Infrastructure/Video/FfmpegFailed.php'
+            - '../src/Ui/Http/Exception/'
+            - '../src/Ui/Http/Idempotency/ClaimResult.php'
+            - '../src/Ui/Http/Idempotency/StoredResponse.php'
+            - '../src/Ui/Http/Idempotency/RequestFingerprint.php'
             - '../src/Ui/Http/Request/'
             - '../src/Ui/Http/Response/'
 
@@ -67,6 +76,7 @@ services:
     App\Task\Domain\Port\VideoTaskRepository: '@App\Task\Infrastructure\Persistence\Doctrine\Repository\DoctrineVideoTaskRepository'
     App\Task\Application\ReadModel\VideoTaskReadRepository: '@App\Task\Infrastructure\Persistence\Doctrine\ReadModel\DbalVideoTaskReadRepository'
     App\Task\Application\Callback\CallbackDelivery: '@App\Task\Infrastructure\Callback\SignedHttpCallbackDelivery'
+    App\Ui\Http\Idempotency\IdempotencyStore: '@App\Shared\Infrastructure\Persistence\Doctrine\Idempotency\DbalIdempotencyStore'
     App\Task\Infrastructure\Media\TargetPolicy: '@App\Task\Infrastructure\Media\PublicTargetPolicy'
 
     # ffmpeg budgets. One invocation per part, then one for the concatenation.

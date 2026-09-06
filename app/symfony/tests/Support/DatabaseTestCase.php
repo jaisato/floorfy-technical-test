@@ -30,6 +30,7 @@ abstract class DatabaseTestCase extends KernelTestCase
         // Children first: partial_videos has a foreign key onto video_tasks.
         $this->connection()->executeStatement('DELETE FROM partial_videos');
         $this->connection()->executeStatement('DELETE FROM video_tasks');
+        $this->connection()->executeStatement('DELETE FROM idempotency_keys');
         $this->entityManager->clear();
     }
 
