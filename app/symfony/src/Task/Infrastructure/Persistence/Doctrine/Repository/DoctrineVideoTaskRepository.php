@@ -118,6 +118,52 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         return true;
     }
 
+    public function cancel(UuidValue $id, DateTimeValue $now): bool
+    {
+        $affected = $this->em->getConnection()->executeStatement(
+            <<<'SQL'
+                UPDATE video_tasks
+                   SET status = :canceled, updated_at = :now
+                 WHERE id = :id AND (status = :pending OR status = :processing)
+                SQL,
+            [
+                'canceled' => VideoTaskStatus::CANCELED->value,
+                'pending' => VideoTaskStatus::PENDING->value,
+                'processing' => VideoTaskStatus::PROCESSING->value,
+                'now' => $now->toDateTimeImmutable(),
+                'id' => $id->value,
+            ],
+            [
+                'canceled' => ParameterType::STRING,
+                'pending' => ParameterType::STRING,
+                'processing' => ParameterType::STRING,
+                'now' => Types::DATETIME_IMMUTABLE,
+                'id' => ParameterType::STRING,
+            ],
+        );
+
+        if ($affected < 1) {
+            return false;
+        }
+
+        $this->forgetCachedCopy($id);
+
+        return true;
+    }
+
+    public function currentStatus(UuidValue $id): ?VideoTaskStatus
+    {
+        // Straight to the connection on purpose: find() would answer from the
+        // identity map with whatever status the row had when it was loaded.
+        $status = $this->em->getConnection()->fetchOne(
+            'SELECT status FROM video_tasks WHERE id = :id',
+            ['id' => $id->value],
+            ['id' => ParameterType::STRING],
+        );
+
+        return \is_string($status) ? VideoTaskStatus::from($status) : null;
+    }
+
     /**
      * The statements above go straight to the connection, so an instance the
      * unit of work is already holding would keep reporting the status the row

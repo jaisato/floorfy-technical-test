@@ -14,8 +14,22 @@ final class FakeImageFetcher implements ImageFetcher
     /** @var array<string, \Throwable> */
     private array $failures = [];
 
+    /** @var callable(string): void|null */
+    private $onFetch;
+
     public function __construct(private readonly string $workDir)
     {
+    }
+
+    /**
+     * Runs while a download is in progress - the moment a cancellation from
+     * outside would land on a real worker.
+     *
+     * @param callable(string): void $hook receives the image URL
+     */
+    public function onFetch(callable $hook): void
+    {
+        $this->onFetch = $hook;
     }
 
     public function failFor(string $imageUrl, \Throwable $error): void
@@ -26,6 +40,10 @@ final class FakeImageFetcher implements ImageFetcher
     public function fetch(string $imageUrl, string $relativeName): string
     {
         $this->fetched[] = $imageUrl;
+
+        if (null !== $this->onFetch) {
+            ($this->onFetch)($imageUrl);
+        }
 
         if (isset($this->failures[$imageUrl])) {
             throw $this->failures[$imageUrl];

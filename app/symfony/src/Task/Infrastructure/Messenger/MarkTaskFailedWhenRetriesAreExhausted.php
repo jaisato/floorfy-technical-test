@@ -52,7 +52,8 @@ final readonly class MarkTaskFailedWhenRetriesAreExhausted
 
         // A task that finished on another delivery keeps its result: the
         // failure being reported is of a message that had nothing left to do.
-        if (null === $task || VideoTaskStatus::COMPLETED === $task->status()) {
+        // A canceled one was stopped on purpose, which is not a failure either.
+        if (null === $task || \in_array($task->status(), [VideoTaskStatus::COMPLETED, VideoTaskStatus::CANCELED], true)) {
             return;
         }
 

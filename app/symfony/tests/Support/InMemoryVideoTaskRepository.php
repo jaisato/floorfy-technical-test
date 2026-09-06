@@ -45,7 +45,7 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         $claimable = match ($task->status()) {
             VideoTaskStatus::PENDING, VideoTaskStatus::FAILED => true,
             VideoTaskStatus::PROCESSING => $stale,
-            VideoTaskStatus::COMPLETED => false,
+            VideoTaskStatus::COMPLETED, VideoTaskStatus::CANCELED => false,
         };
 
         if (!$claimable) {
@@ -68,6 +68,39 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         $task->markPending($now);
 
         return true;
+    }
+
+    /**
+     * Mirrors the conditional write: nothing happens over a completed or failed
+     * row. In memory the row and the aggregate are one instance, so a task the
+     * handler has just canceled through the domain object reads as canceled
+     * here already - and there is no second process that could have finished it
+     * in between, which is what the real condition guards against.
+     */
+    public function cancel(UuidValue $id, DateTimeValue $now): bool
+    {
+        $task = $this->tasks[$id->value] ?? null;
+
+        if (null === $task) {
+            return false;
+        }
+
+        if ($task->isCanceled()) {
+            return true;
+        }
+
+        if (!\in_array($task->status(), [VideoTaskStatus::PENDING, VideoTaskStatus::PROCESSING], true)) {
+            return false;
+        }
+
+        $task->cancel($now);
+
+        return true;
+    }
+
+    public function currentStatus(UuidValue $id): ?VideoTaskStatus
+    {
+        return ($this->tasks[$id->value] ?? null)?->status();
     }
 
     /** @return list<VideoTask> */

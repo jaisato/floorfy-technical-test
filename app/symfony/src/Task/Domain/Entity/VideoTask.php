@@ -88,7 +88,12 @@ final class VideoTask
 
     public function isSettled(): bool
     {
-        return \in_array($this->status, [VideoTaskStatus::COMPLETED, VideoTaskStatus::FAILED], true);
+        return \in_array($this->status, [VideoTaskStatus::COMPLETED, VideoTaskStatus::FAILED, VideoTaskStatus::CANCELED], true);
+    }
+
+    public function isCanceled(): bool
+    {
+        return VideoTaskStatus::CANCELED === $this->status;
     }
 
     /**
@@ -136,6 +141,42 @@ final class VideoTask
         );
 
         $this->errorMessage = $errorMessage;
+    }
+
+    /**
+     * Stops a task that has not finished. A pending one will never be picked
+     * up (the claim refuses a canceled task); a processing one is noticed by
+     * its worker at the next part boundary, which then stops.
+     *
+     * A finished task cannot be canceled: its video exists, or its failure has
+     * been reported, and "canceled" would misdescribe either.
+     */
+    public function cancel(DateTimeValue $now): void
+    {
+        $this->transitionTo(
+            VideoTaskStatus::CANCELED,
+            [VideoTaskStatus::PENDING, VideoTaskStatus::PROCESSING],
+            $now,
+        );
+    }
+
+    /**
+     * Queues a task that ended in failure, or was canceled, for another run.
+     *
+     * The reason for the earlier failure is cleared: what the task shows from
+     * now on is the outcome of the new attempt. Whatever parts were completed
+     * are kept by the caller; this only moves the task itself.
+     */
+    public function retry(DateTimeValue $now): void
+    {
+        $this->transitionTo(
+            VideoTaskStatus::PENDING,
+            [VideoTaskStatus::FAILED, VideoTaskStatus::CANCELED],
+            $now,
+        );
+
+        $this->errorMessage = null;
+        $this->finalVideoUrl = null;
     }
 
     /** @param non-empty-list<VideoTaskStatus> $allowedFrom */

@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace App\Ui\Http\Controller;
 
+use App\Task\Application\Command\CancelVideoTaskCommand;
 use App\Task\Application\Command\CreateVideoTaskCommand;
+use App\Task\Application\Command\RetryVideoTaskCommand;
 use App\Task\Application\DTO\VideoTaskView;
 use App\Task\Application\Query\GetVideoTaskQuery;
 use App\Task\Application\ReadModel\TaskPage;
@@ -110,6 +112,42 @@ final readonly class TaskController
             'status' => $view->summary->status,
             'final_video_url' => $view->summary->finalVideoUrl,
         ]);
+    }
+
+    /**
+     * Cancels a task that has not finished. A pending task is never picked up;
+     * a processing one is stopped by its worker at the next part boundary.
+     * 409 when the task already completed, failed or was canceled.
+     */
+    #[Route('/{id}', name: 'api_tasks_cancel', requirements: ['id' => Requirement::UUID], methods: ['DELETE'])]
+    public function cancel(string $id): JsonResponse
+    {
+        $this->commandBus->dispatch(new CancelVideoTaskCommand($id));
+
+        return $this->taskResponse($id, Response::HTTP_OK);
+    }
+
+    /**
+     * Queues a failed or canceled task again. Completed parts are kept; the
+     * rest are rendered afresh. 409 for any other status.
+     */
+    #[Route('/{id}/retry', name: 'api_tasks_retry', requirements: ['id' => Requirement::UUID], methods: ['POST'])]
+    public function retry(string $id): JsonResponse
+    {
+        $this->commandBus->dispatch(new RetryVideoTaskCommand($id));
+
+        return $this->taskResponse($id, Response::HTTP_ACCEPTED);
+    }
+
+    private function taskResponse(string $id, int $status): JsonResponse
+    {
+        $view = $this->view($id);
+
+        if (null === $view) {
+            return self::notFound();
+        }
+
+        return new JsonResponse($view->toArray(), $status);
     }
 
     private function view(string $id): ?VideoTaskView
