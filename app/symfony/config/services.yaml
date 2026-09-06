@@ -19,6 +19,10 @@ parameters:
     # a new request.
     app.idempotency_ttl_seconds: '%env(int:IDEMPOTENCY_TTL_SECONDS)%'
 
+    # Budget for the ffmpeg probe of /health/ready. A readiness answer that
+    # takes longer than the prober's own timeout is worse than a failed one.
+    app.health_probe_timeout: 5
+
     app.ffmpeg_animate_timeout: '%env(int:FFMPEG_ANIMATE_TIMEOUT)%'
     app.ffmpeg_compose_timeout: '%env(int:FFMPEG_COMPOSE_TIMEOUT)%'
     app.ffmpeg_threads: '%env(int:FFMPEG_THREADS)%'
@@ -39,6 +43,10 @@ services:
             # messages and DTOs makes the container try to autowire their
             # constructors, and puts hundreds of ids in it that nothing asks for.
             - '../src/Kernel.php'
+            - '../src/Shared/Application/Health/CheckResult.php'
+            - '../src/Shared/Application/Health/Readiness.php'
+            # Registered twice below, once per directory, with its name and path.
+            - '../src/Shared/Infrastructure/Health/WritableDirectoryCheck.php'
             - '../src/Shared/Domain/Exception/'
             - '../src/Shared/Domain/ValueObject/'
             - '../src/Shared/Infrastructure/Persistence/Doctrine/Entity/'
@@ -78,6 +86,23 @@ services:
     App\Task\Application\Callback\CallbackDelivery: '@App\Task\Infrastructure\Callback\SignedHttpCallbackDelivery'
     App\Ui\Http\Idempotency\IdempotencyStore: '@App\Shared\Infrastructure\Persistence\Doctrine\Idempotency\DbalIdempotencyStore'
     App\Task\Infrastructure\Media\TargetPolicy: '@App\Task\Infrastructure\Media\PublicTargetPolicy'
+
+    # Readiness: one check per directory the worker writes into. Both are
+    # Docker volumes, and a volume whose ownership predates the image is how
+    # every render comes to fail at the last step.
+    app.health_check.videos_dir:
+        class: App\Shared\Infrastructure\Health\WritableDirectoryCheck
+        tags: ['app.health_check']
+        arguments:
+            $checkName: 'videos_dir'
+            $directory: '%app.videos_dir%'
+
+    app.health_check.work_dir:
+        class: App\Shared\Infrastructure\Health\WritableDirectoryCheck
+        tags: ['app.health_check']
+        arguments:
+            $checkName: 'work_dir'
+            $directory: '%app.work_dir%'
 
     # ffmpeg budgets. One invocation per part, then one for the concatenation.
     App\Task\Infrastructure\Video\FfmpegImageAnimator:
