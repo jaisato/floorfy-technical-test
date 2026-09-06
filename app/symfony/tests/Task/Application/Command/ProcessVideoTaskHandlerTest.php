@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Tests\Task\Application\Command;
 
+use App\Task\Application\Callback\NotifyTaskCallback;
+use App\Task\Application\Callback\TaskCallbacks;
 use App\Task\Application\Command\ProcessVideoTaskCommand;
 use App\Task\Application\Command\ProcessVideoTaskHandler;
 use App\Task\Domain\Entity\PartialVideo;
@@ -19,6 +21,7 @@ use App\Tests\Support\FakeVideoComposer;
 use App\Tests\Support\FixedClock;
 use App\Tests\Support\InMemoryPartialVideoRepository;
 use App\Tests\Support\InMemoryVideoTaskRepository;
+use App\Tests\Support\RecordingMessageBus;
 use App\Tests\Support\TempDirectory;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\NullLogger;
@@ -34,6 +37,7 @@ final class ProcessVideoTaskHandlerTest extends TestCase
     private FakeImageAnimator $animator;
     private FakeVideoComposer $composer;
     private FixedClock $clock;
+    private RecordingMessageBus $bus;
     private TempDirectory $dir;
 
     protected function setUp(): void
@@ -48,6 +52,7 @@ final class ProcessVideoTaskHandlerTest extends TestCase
         $this->animator = new FakeImageAnimator();
         $this->composer = new FakeVideoComposer();
         $this->clock = new FixedClock();
+        $this->bus = new RecordingMessageBus();
     }
 
     protected function tearDown(): void
@@ -353,6 +358,48 @@ final class ProcessVideoTaskHandlerTest extends TestCase
         self::assertSame(VideoTaskStatus::PENDING, $task->status());
     }
 
+    /** The client that asked to be told is told, once, when the video exists. */
+    public function testCompletionQueuesACallbackNotificationWhenTheTaskAskedForOne(): void
+    {
+        $task = VideoTask::create(['images' => ['https://example.com/a.png']], $this->clock->now(), 'https://client.example/hook');
+        $this->tasks->save($task);
+        $this->partials->saveAll([PartialVideo::create($task->id(), 'https://example.com/a.png', Transition::PAN, 0, $this->clock->now())]);
+
+        $this->handle($task);
+
+        self::assertCount(1, $this->bus->dispatched);
+        $message = $this->bus->dispatched[0];
+        self::assertInstanceOf(NotifyTaskCallback::class, $message);
+        self::assertSame($task->id()->value, $message->taskId);
+        self::assertSame('completed', $message->event);
+    }
+
+    public function testATaskWithoutACallbackUrlQueuesNoNotification(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+
+        $this->handle($task);
+
+        self::assertSame([], $this->bus->dispatched);
+    }
+
+    /** A failed attempt is not an outcome yet: only the terminal status is notified. */
+    public function testAFailedAttemptQueuesNoNotification(): void
+    {
+        $task = VideoTask::create(['images' => ['https://example.com/a.png']], $this->clock->now(), 'https://client.example/hook');
+        $this->tasks->save($task);
+        $this->partials->saveAll([PartialVideo::create($task->id(), 'https://example.com/a.png', Transition::PAN, 0, $this->clock->now())]);
+        $this->images->failFor('https://example.com/a.png', new \RuntimeException('connection reset'));
+
+        try {
+            $this->handle($task);
+        } catch (TaskProcessingFailed) {
+            // expected
+        }
+
+        self::assertSame([], $this->bus->dispatched);
+    }
+
     /**
      * A cancellation lands while a part is being rendered. The worker notices
      * at the next boundary and stops: nothing more is fetched, no final video is
@@ -444,6 +491,7 @@ final class ProcessVideoTaskHandlerTest extends TestCase
             $this->images,
             $this->animator,
             $this->composer,
+            new TaskCallbacks($this->bus),
             $videosDir,
             'http://localhost:8080',
             self::LEASE_SECONDS,

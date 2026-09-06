@@ -57,6 +57,7 @@ final readonly class DbalVideoTaskReadRepository implements VideoTaskReadReposit
                 ),
                 self::nullableString($row, 'final_video_url'),
                 self::nullableString($row, 'error_message'),
+                self::nullableString($row, 'callback_url'),
                 self::instant($row, 'created_at'),
                 self::instant($row, 'updated_at'),
             );
@@ -76,7 +77,7 @@ final readonly class DbalVideoTaskReadRepository implements VideoTaskReadReposit
     private function pageRows(TaskListing $listing): array
     {
         $query = $this->filtered($listing)
-            ->select('t.id', 't.status', 't.final_video_url', 't.error_message', 't.created_at', 't.updated_at')
+            ->select('t.id', 't.status', 't.final_video_url', 't.error_message', 't.callback_url', 't.created_at', 't.updated_at')
             // Newest first, and the id - time-ordered, being a UUID v7 - breaks
             // ties among tasks created in the same second, so two pages never
             // overlap. Both descending, so the (created_at, id) index is read

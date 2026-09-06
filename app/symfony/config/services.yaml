@@ -38,6 +38,9 @@ services:
             - '../src/Shared/Domain/Exception/'
             - '../src/Shared/Domain/ValueObject/'
             - '../src/Shared/Infrastructure/Process/ProcessResult.php'
+            - '../src/Task/Application/Callback/CallbackDeliveryFailed.php'
+            - '../src/Task/Application/Callback/CallbackRequest.php'
+            - '../src/Task/Application/Callback/NotifyTaskCallback.php'
             - '../src/Task/Application/Command/CancelVideoTaskCommand.php'
             - '../src/Task/Application/Command/CreateVideoTaskCommand.php'
             - '../src/Task/Application/Command/ProcessVideoTaskCommand.php'
@@ -63,6 +66,7 @@ services:
     App\Task\Domain\Port\VideoComposer: '@App\Task\Infrastructure\Video\FfmpegVideoComposer'
     App\Task\Domain\Port\VideoTaskRepository: '@App\Task\Infrastructure\Persistence\Doctrine\Repository\DoctrineVideoTaskRepository'
     App\Task\Application\ReadModel\VideoTaskReadRepository: '@App\Task\Infrastructure\Persistence\Doctrine\ReadModel\DbalVideoTaskReadRepository'
+    App\Task\Application\Callback\CallbackDelivery: '@App\Task\Infrastructure\Callback\SignedHttpCallbackDelivery'
     App\Task\Infrastructure\Media\TargetPolicy: '@App\Task\Infrastructure\Media\PublicTargetPolicy'
 
     # ffmpeg budgets. One invocation per part, then one for the concatenation.

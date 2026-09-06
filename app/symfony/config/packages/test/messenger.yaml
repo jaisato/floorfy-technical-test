@@ -5,4 +5,5 @@ framework:
             # test can assert what was dispatched, and no AMQP extension is
             # needed to boot the kernel.
             async: 'in-memory://'
+            callbacks: 'in-memory://'
             failed: 'in-memory://'

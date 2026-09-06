@@ -20,11 +20,13 @@ final class VideoTask
         private ?string $errorMessage,
         private readonly DateTimeValue $createdAt,
         private DateTimeValue $updatedAt,
+        /** Where to POST the outcome, if the client asked to be told. */
+        private readonly ?string $callbackUrl,
     ) {
     }
 
     /** @param array<string,mixed> $payload */
-    public static function create(array $payload, DateTimeValue $now): self
+    public static function create(array $payload, DateTimeValue $now, ?string $callbackUrl = null): self
     {
         return new self(
             UuidValue::new(),
@@ -34,6 +36,7 @@ final class VideoTask
             null,
             $now,
             $now,
+            $callbackUrl,
         );
     }
 
@@ -46,8 +49,14 @@ final class VideoTask
         ?string $errorMessage,
         DateTimeValue $createdAt,
         DateTimeValue $updatedAt,
+        ?string $callbackUrl = null,
     ): self {
-        return new self($id, $payload, $status, $finalVideoUrl, $errorMessage, $createdAt, $updatedAt);
+        return new self($id, $payload, $status, $finalVideoUrl, $errorMessage, $createdAt, $updatedAt, $callbackUrl);
+    }
+
+    public function callbackUrl(): ?string
+    {
+        return $this->callbackUrl;
     }
 
     public function id(): UuidValue

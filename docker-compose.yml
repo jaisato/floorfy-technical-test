@@ -12,6 +12,9 @@ x-app-environment: &app-environment
   DATABASE_URL: "mysql://${DB_USER:-app}:${DB_PASSWORD:-app_dev_password}@mysql:3306/${DB_NAME:-app}?serverVersion=8.0&charset=utf8mb4"
   MESSENGER_TRANSPORT_DSN: "amqp://${RABBITMQ_USER:-app}:${RABBITMQ_PASSWORD:-app_dev_password}@rabbitmq:5672/%2f/messages"
   MESSENGER_FAILURE_TRANSPORT_DSN: "amqp://${RABBITMQ_USER:-app}:${RABBITMQ_PASSWORD:-app_dev_password}@rabbitmq:5672/%2f/failed"
+  MESSENGER_CALLBACKS_TRANSPORT_DSN: "amqp://${RABBITMQ_USER:-app}:${RABBITMQ_PASSWORD:-app_dev_password}@rabbitmq:5672/%2f/callbacks"
+  # Signs the webhook notifications (X-Task-Signature). Replace per deployment.
+  CALLBACK_SIGNING_SECRET: ${CALLBACK_SIGNING_SECRET:-dev-only-callback-signing-secret-replace-me}
   # Public base URL clients use to reach nginx; the video URLs the API returns
   # are built from it. One variable, not two: the worker used to build URLs from
   # whichever of APP_URL and BASE_PUBLIC_URL happened to be set.

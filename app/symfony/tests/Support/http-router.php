@@ -136,6 +136,43 @@ switch ($path) {
         echo 'boom';
         break;
 
+        // ---- webhook endpoints, for the callback delivery tests -----------------
+
+    case '/hook/record':
+        // Writes what arrived to a file the test names, so the test can check
+        // the headers and the body a real receiver would see.
+        $id = preg_replace('/[^a-z0-9]/', '', (string) ($_GET['id'] ?? ''));
+        $headers = [];
+        foreach ($_SERVER as $key => $value) {
+            if (is_string($key) && str_starts_with($key, 'HTTP_') && is_string($value)) {
+                $headers[strtolower(str_replace('_', '-', substr($key, 5)))] = $value;
+            }
+        }
+        file_put_contents(sys_get_temp_dir().'/floorfy-hook-'.$id.'.json', json_encode([
+            'method' => $_SERVER['REQUEST_METHOD'] ?? '',
+            'content_type' => $_SERVER['CONTENT_TYPE'] ?? '',
+            'headers' => $headers,
+            'body' => file_get_contents('php://input'),
+        ], \JSON_THROW_ON_ERROR));
+        http_response_code(204);
+        break;
+
+    case '/hook/fail':
+        http_response_code(503);
+        echo 'try later';
+        break;
+
+    case '/hook/redirect':
+        // A receiver that redirects is not followed: the redirect target could
+        // be anything, including an address the guard would refuse.
+        $redirect('/hook/record?id=redirected', 307);
+        break;
+
+    case '/hook/slow':
+        sleep(3);
+        http_response_code(204);
+        break;
+
     default:
         http_response_code(404);
         echo 'not found';

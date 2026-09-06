@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Tests\Ui\Http\Controller;
 
+use App\Task\Application\Callback\NotifyTaskCallback;
 use App\Task\Application\Command\ProcessVideoTaskCommand;
 use App\Tests\Support\ApiTestCase;
 use App\Ui\Http\Response\ApiProblem;
@@ -74,6 +75,38 @@ final class TaskLifecycleTest extends ApiTestCase
 
         $this->assertStatus(Response::HTTP_NOT_FOUND);
         $this->assertProblem(Response::HTTP_NOT_FOUND);
+    }
+
+    /** The notification goes on its own queue, so it is neither video work nor blocked by it. */
+    public function testCancelingATaskWithACallbackQueuesANotificationOnTheCallbacksTransport(): void
+    {
+        $this->json('POST', '/api/tasks', [
+            'images' => [['url' => 'https://example.com/a.png', 'transition' => 'pan']],
+            'callback_url' => 'https://8.8.8.8/hooks/video-tasks',
+        ]);
+        $taskId = $this->responseBody()['task_id'];
+        self::assertIsString($taskId);
+
+        $this->client->request('DELETE', '/api/tasks/'.$taskId);
+
+        $this->assertStatus(Response::HTTP_OK);
+        $messages = $this->transport('callbacks')->getSent();
+        self::assertCount(1, $messages);
+        $message = $messages[0]->getMessage();
+        self::assertInstanceOf(NotifyTaskCallback::class, $message);
+        self::assertSame($taskId, $message->taskId);
+        self::assertSame('canceled', $message->event);
+        self::assertSame([], $this->transport('async')->getSent(), 'a cancellation queues no video work');
+    }
+
+    public function testCancelingATaskWithoutACallbackQueuesNothing(): void
+    {
+        $taskId = $this->createTask();
+        $this->transport('async')->reset();
+
+        $this->client->request('DELETE', '/api/tasks/'.$taskId);
+
+        self::assertSame([], $this->transport('callbacks')->getSent());
     }
 
     public function testACanceledTaskShowsUpUnderItsOwnStatusFilter(): void

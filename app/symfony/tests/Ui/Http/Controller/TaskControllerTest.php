@@ -64,6 +64,74 @@ final class TaskControllerTest extends ApiTestCase
         );
     }
 
+    public function testACallbackUrlIsStoredWithTheTask(): void
+    {
+        $this->json('POST', '/api/tasks', [
+            'images' => [['url' => 'https://example.com/a.png', 'transition' => 'zoom_in']],
+            // An address literal: the guard resolves names, and the suite never
+            // touches the network.
+            'callback_url' => 'https://8.8.8.8/hooks/video-tasks',
+        ]);
+
+        $this->assertStatus(Response::HTTP_CREATED);
+        $taskId = $this->responseBody()['task_id'];
+
+        $this->client->request('GET', '/api/tasks/'.$taskId);
+
+        self::assertSame('https://8.8.8.8/hooks/video-tasks', $this->responseBody()['callback_url']);
+    }
+
+    public function testATaskWithoutACallbackUrlReportsNone(): void
+    {
+        $taskId = $this->createTask();
+
+        $this->client->request('GET', '/api/tasks/'.$taskId);
+
+        self::assertNull($this->responseBody()['callback_url']);
+    }
+
+    /**
+     * A callback URL is an outbound request to an address the caller chose -
+     * the same thing an image URL is - and faces the same guard, at request
+     * time: a URL pointing inside the network is a 400 now, not a worker
+     * discovering it later with nobody left to tell.
+     */
+    public function testACallbackUrlInsideTheNetworkIsRefused(): void
+    {
+        $this->json('POST', '/api/tasks', [
+            'images' => [['url' => 'https://example.com/a.png', 'transition' => 'zoom_in']],
+            'callback_url' => 'http://169.254.169.254/latest/meta-data/',
+        ]);
+
+        $this->assertStatus(Response::HTTP_BAD_REQUEST);
+        self::assertArrayHasKey('callbackUrl', $this->responseBody()['violations']);
+        self::assertSame([], $this->transport('async')->getSent());
+    }
+
+    /** @return iterable<string, array{mixed}> */
+    public static function invalidCallbackUrls(): iterable
+    {
+        yield 'not a url' => ['not a url'];
+        yield 'ftp' => ['ftp://8.8.8.8/hook'];
+        yield 'odd port' => ['https://8.8.8.8:8443/hook'];
+        yield 'loopback' => ['http://127.0.0.1/hook'];
+        yield 'not text' => [['https://8.8.8.8/hook']];
+        yield 'empty' => [''];
+        yield 'too long' => ['https://8.8.8.8/'.str_repeat('a', 2100)];
+    }
+
+    #[DataProvider('invalidCallbackUrls')]
+    public function testAnInvalidCallbackUrlIsAValidationProblem(mixed $callbackUrl): void
+    {
+        $this->json('POST', '/api/tasks', [
+            'images' => [['url' => 'https://example.com/a.png', 'transition' => 'zoom_in']],
+            'callback_url' => $callbackUrl,
+        ]);
+
+        $this->assertStatus(Response::HTTP_BAD_REQUEST);
+        self::assertArrayHasKey('callbackUrl', $this->responseBody()['violations']);
+    }
+
     /** @return iterable<string, array{mixed}> */
     public static function invalidPayloads(): iterable
     {

@@ -99,7 +99,7 @@ POST /api/tasks
       │  valida el cuerpo, escribe la tarea y sus partes en UNA transacción
       │  y, una vez confirmada, publica un mensaje en RabbitMQ
       ▼
-  [ worker ]  messenger:consume async
+  [ worker ]  messenger:consume async callbacks
       │  1. reclama la tarea con un UPDATE condicional (una sola vez)
       │  2. por cada parte: descarga la imagen (con guardia SSRF) y la anima con
       │     FFmpeg hacia un directorio de staging
@@ -111,6 +111,9 @@ GET /api/tasks/{id}          estado y progreso de la tarea y de cada parte
 GET /api/tasks/{id}/final    URL del vídeo final
 DELETE /api/tasks/{id}       cancela una tarea pendiente o en curso
 POST /api/tasks/{id}/retry   reencola una tarea fallida o cancelada
+      │
+      ▼  al llegar a completed | failed | canceled, si la tarea tiene callback_url
+  [ worker ]  POST firmado (X-Task-Signature) con el resumen de la tarea
 ```
 
 Puntos que merece la pena conocer:
@@ -158,6 +161,10 @@ Puntos que merece la pena conocer:
 
 - `transition`: `pan`, `zoom_in` o `zoom_out`.
 - Máximo 20 imágenes por tarea; `url` hasta 2048 caracteres.
+- `callback_url` (opcional): URL a la que se notifica el desenlace (ver
+  [Webhook](#webhook)). Pasa por la **misma guardia SSRF** que las imágenes en el
+  momento de la petición: sólo `http`/`https`, puertos 80/443 y direcciones
+  públicas; cualquier otra cosa es un **400**.
 - **201** `{"task_id": "...", "status": "pending"}`
 - **400** un documento `application/problem+json` (ver [Errores](#errores)).
 
@@ -243,6 +250,39 @@ Reencola una tarea `failed` o `canceled`: las partes completadas se conservan
 publica un nuevo mensaje para el worker. Responde **202** con la tarea; **409**
 para cualquier otro estado; **404** si no existe.
 
+### Webhook
+
+Si la tarea se creó con `callback_url`, al llegar a `completed`, `failed` o
+`canceled` se encola una notificación (transporte `callbacks`, con sus propios
+reintentos: 6 intentos de 30 s a 10 min, después la cola `failed`) que hace un
+`POST` a esa URL:
+
+| Cabecera | Valor |
+|---|---|
+| `Content-Type` | `application/json` |
+| `X-Task-Event` | `task.completed`, `task.failed` o `task.canceled` |
+| `X-Task-Id` | id de la tarea |
+| `X-Task-Signature` | `sha256=<hex>`: HMAC-SHA256 del cuerpo exacto con `CALLBACK_SIGNING_SECRET` |
+
+El cuerpo es el **resumen de la tarea tal y como está en ese momento** (lo mismo
+que un elemento de `GET /api/tasks`, sin `partial_videos`). El evento va en la
+cabecera, así que un `task.failed` entregado tras un `retry` sigue diciendo qué
+pasó aunque el cuerpo ya muestre `pending`.
+
+Verificación en el receptor (PHP):
+
+```php
+$expected = 'sha256='.hash_hmac('sha256', $rawBody, $secret);
+if (!hash_equals($expected, $_SERVER['HTTP_X_TASK_SIGNATURE'] ?? '')) { http_response_code(401); exit; }
+```
+
+Reglas de entrega: se acepta cualquier `2xx`; no se siguen redirecciones (un
+`3xx` cuenta como rechazo); 10 s de tiempo máximo; la conexión se fija a la
+dirección validada por la guardia (como con las imágenes). Un fallo de entrega
+**nunca** altera el estado de la tarea; sin `CALLBACK_SIGNING_SECRET` no se envía
+nada sin firmar (la notificación acaba en la cola `failed`, con el motivo en el
+log).
+
 ### Errores
 
 Un único contrato para toda la API, venga el error de un controlador, del router
@@ -281,7 +321,9 @@ que está en `.gitignore`.
 | `APP_ENV`, `APP_SECRET` | entorno de Symfony |
 | `DATABASE_URL` | conexión MySQL de la aplicación (usuario no root) |
 | `MESSENGER_TRANSPORT_DSN` | cola de trabajo (AMQP) |
+| `MESSENGER_CALLBACKS_TRANSPORT_DSN` | cola de notificaciones webhook (reintentos propios) |
 | `MESSENGER_FAILURE_TRANSPORT_DSN` | cola de mensajes con reintentos agotados |
+| `CALLBACK_SIGNING_SECRET` | clave HMAC de `X-Task-Signature`; una por despliegue, sin ella no se envían notificaciones |
 | `APP_URL` | URL pública de la API; con ella se construyen las URLs de vídeo |
 | `DEFAULT_URI` | base para generar URLs fuera de una petición HTTP |
 | `TASK_LEASE_SECONDS` | cuánto puede estar una tarea en `processing` antes de que otro worker pueda tomarla |

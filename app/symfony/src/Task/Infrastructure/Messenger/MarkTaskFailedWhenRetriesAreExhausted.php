@@ -7,6 +7,7 @@ namespace App\Task\Infrastructure\Messenger;
 use App\Shared\Application\Clock\Clock;
 use App\Shared\Domain\Exception\ClientSafe;
 use App\Shared\Domain\ValueObject\UuidValue;
+use App\Task\Application\Callback\TaskCallbacks;
 use App\Task\Application\Command\ProcessVideoTaskCommand;
 use App\Task\Domain\Enum\VideoTaskStatus;
 use App\Task\Domain\Port\VideoTaskRepository;
@@ -27,6 +28,7 @@ final readonly class MarkTaskFailedWhenRetriesAreExhausted
     public function __construct(
         private VideoTaskRepository $tasks,
         private Clock $clock,
+        private TaskCallbacks $callbacks,
     ) {
     }
 
@@ -59,6 +61,7 @@ final readonly class MarkTaskFailedWhenRetriesAreExhausted
 
         $task->markFailed(self::reason($event->getThrowable()), $this->clock->now());
         $this->tasks->save($task);
+        $this->callbacks->notify($task);
     }
 
     /**
