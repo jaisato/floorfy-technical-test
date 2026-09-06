@@ -75,6 +75,38 @@ final class PruneVideosTest extends TestCase
         self::assertTrue($part->isCompleted());
     }
 
+    /**
+     * A file that would not go - a read-only mount, a permission the
+     * deployment lost - used to be counted as freed and the task marked
+     * pruned, so the sweep never came back and the bytes leaked for good while
+     * every report said they had gone.
+     */
+    public function testAFileThatCannotBeDeletedLeavesTheTaskForTheNextRun(): void
+    {
+        $task = $this->settledTask('2026-01-01T00:00:00+00:00');
+        $part = $this->partOf($task);
+        $this->videoFile('final_'.$task->id()->value.'.mp4');
+
+        // Something at the clip's path that unlink() will not remove. A
+        // directory is the one thing that refuses even to a test running as
+        // root, and the branch under test is simply "unlink said no" - which in
+        // a deployment is a read-only mount or a lost permission.
+        $clip = $this->dir->file('videos').'/partial_'.$part->id()->value.'.mp4';
+        mkdir($clip, 0o755, true);
+
+        $logger = new RecordingLogger();
+        $report = $this->prune($logger)->run($this->cutoff());
+
+        self::assertDirectoryExists($clip, 'what would not go is still there');
+        self::assertSame(1, $report->files, 'only the file that actually went is counted');
+        self::assertSame([], $report->taskIds, 'and the task is not reported as pruned');
+        self::assertNull($task->prunedAt(), 'so the next run tries again');
+        self::assertNotNull($task->finalVideoUrl());
+        self::assertStringContainsString('Retention could not delete every file of a task', $logger->everythingLogged());
+
+        rmdir($clip);
+    }
+
     public function testTheScratchDirectoryGoesWithThem(): void
     {
         $task = $this->settledTask('2026-01-01T00:00:00+00:00');

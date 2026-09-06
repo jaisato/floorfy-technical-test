@@ -122,6 +122,79 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         return true;
     }
 
+    public function renewLease(UuidValue $id, DateTimeValue $now): bool
+    {
+        $affected = $this->em->getConnection()->executeStatement(
+            <<<'SQL'
+                UPDATE video_tasks
+                   SET updated_at = :now
+                 WHERE id = :id AND status = :processing
+                SQL,
+            [
+                'processing' => VideoTaskStatus::PROCESSING->value,
+                'now' => $now->toDateTimeImmutable(),
+                'id' => $id->value,
+            ],
+            [
+                'processing' => ParameterType::STRING,
+                'now' => Types::DATETIME_IMMUTABLE,
+                'id' => ParameterType::STRING,
+            ],
+        );
+
+        if ($affected < 1) {
+            return false;
+        }
+
+        $this->forgetCachedCopy($id);
+
+        return true;
+    }
+
+    public function complete(UuidValue $id, string $finalVideoUrl, DateTimeValue $now): bool
+    {
+        $affected = $this->em->getConnection()->executeStatement(
+            <<<'SQL'
+                UPDATE video_tasks
+                   SET status = :completed, final_video_url = :url, error_message = NULL, updated_at = :now
+                 WHERE id = :id AND status = :processing
+                SQL,
+            [
+                'completed' => VideoTaskStatus::COMPLETED->value,
+                'processing' => VideoTaskStatus::PROCESSING->value,
+                'url' => $finalVideoUrl,
+                'now' => $now->toDateTimeImmutable(),
+                'id' => $id->value,
+            ],
+            [
+                'completed' => ParameterType::STRING,
+                'processing' => ParameterType::STRING,
+                'url' => ParameterType::STRING,
+                'now' => Types::DATETIME_IMMUTABLE,
+                'id' => ParameterType::STRING,
+            ],
+        );
+
+        if ($affected < 1) {
+            return false;
+        }
+
+        $this->forgetCachedCopy($id);
+
+        return true;
+    }
+
+    public function markCallbackNotified(UuidValue $id, DateTimeValue $now): void
+    {
+        $this->em->getConnection()->executeStatement(
+            'UPDATE video_tasks SET callback_notified_at = :now WHERE id = :id',
+            ['now' => $now->toDateTimeImmutable(), 'id' => $id->value],
+            ['now' => Types::DATETIME_IMMUTABLE, 'id' => ParameterType::STRING],
+        );
+
+        $this->forgetCachedCopy($id);
+    }
+
     public function cancel(UuidValue $id, DateTimeValue $now): bool
     {
         $affected = $this->em->getConnection()->executeStatement(
@@ -203,6 +276,63 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         $tasks = [];
 
         foreach ($entities as $entity) {
+            if ($entity instanceof VideoTaskEntity) {
+                $tasks[] = $this->toDomain($entity);
+            }
+        }
+
+        return $tasks;
+    }
+
+    public function listUnclaimedSince(DateTimeValue $before, int $limit): array
+    {
+        return $this->hydrate(
+            $this->em->createQueryBuilder()
+                ->select('t')
+                ->from(VideoTaskEntity::class, 't')
+                ->where('t.status = :pending')
+                ->andWhere('t.updatedAt < :before')
+                ->orderBy('t.updatedAt', 'ASC')
+                ->setParameter('pending', VideoTaskStatus::PENDING->value)
+                ->setParameter('before', $before->toDateTimeImmutable())
+                ->setMaxResults($limit)
+                ->getQuery()
+                ->getResult(),
+        );
+    }
+
+    public function listAwaitingCallback(DateTimeValue $before, int $limit): array
+    {
+        return $this->hydrate(
+            $this->em->createQueryBuilder()
+                ->select('t')
+                ->from(VideoTaskEntity::class, 't')
+                ->where('t.callbackUrl IS NOT NULL')
+                ->andWhere('t.callbackNotifiedAt IS NULL')
+                ->andWhere('t.updatedAt < :before')
+                ->andWhere('t.status IN (:settled)')
+                ->orderBy('t.updatedAt', 'ASC')
+                ->setParameter('before', $before->toDateTimeImmutable())
+                ->setParameter('settled', array_map(
+                    static fn (VideoTaskStatus $status): string => $status->value,
+                    VideoTaskStatus::settled(),
+                ))
+                ->setMaxResults($limit)
+                ->getQuery()
+                ->getResult(),
+        );
+    }
+
+    /**
+     * @param mixed $rows whatever the query returned
+     *
+     * @return list<VideoTask>
+     */
+    private function hydrate(mixed $rows): array
+    {
+        $tasks = [];
+
+        foreach (is_iterable($rows) ? $rows : [] as $entity) {
             if ($entity instanceof VideoTaskEntity) {
                 $tasks[] = $this->toDomain($entity);
             }

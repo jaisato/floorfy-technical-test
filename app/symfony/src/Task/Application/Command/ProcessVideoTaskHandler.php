@@ -12,7 +12,6 @@ use App\Task\Application\Callback\TaskCallbacks;
 use App\Task\Application\Url\VideoUrls;
 use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Entity\VideoTask;
-use App\Task\Domain\Enum\VideoTaskStatus;
 use App\Task\Domain\Exception\TaskCanceled;
 use App\Task\Domain\Exception\TaskProcessingFailed;
 use App\Task\Domain\Port\ImageAnimator;
@@ -45,6 +44,11 @@ use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
  * - A cancellation that arrives mid-run is noticed at the next part boundary:
  *   the attempt stops, the message is acknowledged, and what was rendered so
  *   far stays on disk for a later retry to reuse.
+ * - The claim is renewed at each of those boundaries. The lease used to be
+ *   measured from the moment the task was claimed, so a long but perfectly
+ *   healthy run - twenty images take as long as they take - outlived it and a
+ *   second worker took the task off the first. Renewed, the deadline means "no
+ *   progress since", which is what it was for.
  */
 #[AsMessageHandler(bus: 'messenger.bus.command')]
 final readonly class ProcessVideoTaskHandler
@@ -133,7 +137,7 @@ final readonly class ProcessVideoTaskHandler
         foreach ($partials as $partial) {
             // Between parts, not during one: a running ffmpeg is left to finish
             // its clip, which a retry then reuses.
-            $this->stopIfCanceled($task);
+            $this->keepClaim($task);
 
             $reused = $this->reusableFile($partial);
 
@@ -157,19 +161,35 @@ final readonly class ProcessVideoTaskHandler
             throw TaskProcessingFailed::partialsFailed($failed, \count($partials));
         }
 
-        $this->stopIfCanceled($task);
+        $this->keepClaim($task);
         $this->composeFinal($task, $clips, $options);
     }
 
     /**
-     * Reads the status the row has now: the copy in hand is from the start of
-     * the attempt, and a cancellation is written by another process.
+     * One write that both proves this attempt still owns the task and pushes
+     * the lease forward.
+     *
+     * It replaces a plain status read: reading told us about a cancellation but
+     * said nothing about the lease, which kept expiring underneath a run that
+     * was making perfectly good progress. The update touches the row only while
+     * it is still "processing", so it fails for a cancellation and for a task
+     * another worker has already taken over - and either way this attempt has
+     * no business carrying on.
      */
-    private function stopIfCanceled(VideoTask $task): void
+    private function keepClaim(VideoTask $task): void
     {
-        if (VideoTaskStatus::CANCELED === $this->tasks->currentStatus($task->id())) {
-            throw TaskCanceled::noticed($task->id()->value);
+        if ($this->tasks->renewLease($task->id(), $this->clock->now())) {
+            return;
         }
+
+        $status = $this->tasks->currentStatus($task->id());
+
+        $this->logger->info('Claim lost, stopping the attempt', [
+            'task_id' => $task->id()->value,
+            'status' => $status?->value,
+        ]);
+
+        throw TaskCanceled::noticed($task->id()->value);
     }
 
     /** @param list<Clip> $clips */
@@ -190,8 +210,19 @@ final readonly class ProcessVideoTaskHandler
 
         // The path, not a URL: the address a client is given is built when it
         // is asked for, so it follows the deployment and can carry a signature.
-        $task->markCompleted(VideoUrls::PREFIX.$name, $this->clock->now());
-        $this->tasks->save($task);
+        $finalUrl = VideoUrls::PREFIX.$name;
+        $completedAt = $this->clock->now();
+
+        // Conditional, and that condition is the whole point: a cancellation
+        // that arrived while ffmpeg was composing used to be overwritten here,
+        // so a client was told the task was canceled and then that it had
+        // completed. The video stays on disk either way; the retention job
+        // clears it with the rest of the canceled task's files.
+        if (!$this->tasks->complete($task->id(), $finalUrl, $completedAt)) {
+            throw TaskCanceled::noticed($task->id()->value);
+        }
+
+        $task->markCompleted($finalUrl, $completedAt);
         $this->callbacks->notify($task);
 
         $this->logger->info('Task completed', [

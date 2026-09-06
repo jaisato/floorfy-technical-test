@@ -191,10 +191,10 @@ final class CreateTaskRequest
             }
 
             $image = ['url' => $url, 'transition' => $transition];
-            $duration = $specification['duration'] ?? null;
+            $duration = self::seconds($specification['duration'] ?? null);
 
-            if (\is_int($duration) || \is_float($duration)) {
-                $image['duration'] = (float) $duration;
+            if (null !== $duration) {
+                $image['duration'] = $duration;
             }
 
             $images[] = $image;
@@ -204,15 +204,27 @@ final class CreateTaskRequest
     }
 
     /**
-     * Seconds arrive as either JSON type; "fps" is a count and stays an int.
-     * The constraints have already refused anything else.
+     * Seconds arrive as either JSON type; "fps" is a count and stays an int
+     * (its constraint is Type('integer'), so a string never gets this far).
      */
     private static function normalise(string $name, mixed $value): mixed
     {
-        if ('fps' === $name || !\is_int($value) && !\is_float($value)) {
-            return $value;
-        }
+        return 'fps' === $name ? $value : self::seconds($value) ?? $value;
+    }
 
-        return (float) $value;
+    /**
+     * A duration as a float, whichever way the client wrote it.
+     *
+     * The constraint on these fields is Type('numeric'), which accepts "3.5"
+     * as readily as 3.5 - and Range coerces it to compare - so a request with
+     * a quoted number is a valid request that asked for 3.5 seconds. It used
+     * to be dropped here instead, silently, and the task was rendered with the
+     * deployment's default: accepted, acknowledged, and not what was asked for.
+     */
+    private static function seconds(mixed $value): ?float
+    {
+        return \is_int($value) || \is_float($value) || \is_string($value) && is_numeric($value)
+            ? (float) $value
+            : null;
     }
 }

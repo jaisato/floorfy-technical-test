@@ -15,10 +15,15 @@ if ($_SERVER['APP_DEBUG'] ?? false) {
     umask(0000);
 }
 
-// The schema is built from the mapping rather than by running the migrations:
-// those are MySQL DDL, and the suite is meant to run on SQLite on a clean clone
-// with no services at all. CI applies the migrations against MySQL separately,
-// which is where they get proven.
+// On SQLite the schema is built from the mapping: the migrations are MySQL DDL
+// and the suite is meant to run on a clean clone with no services at all.
+//
+// Anywhere else the migrations own the schema and this must keep its hands off
+// it. CI points DATABASE_URL at MySQL and applies them before calling PHPUnit,
+// so building the schema here as well met tables that already existed - "Table
+// 'video_tasks' already exists", and not one test ran. It is also the point of
+// running against MySQL at all: proving what the migrations produce, not what
+// the mapping would have produced.
 $kernel = new Kernel('test', true);
 $kernel->boot();
 
@@ -28,9 +33,14 @@ if (!$entityManager instanceof EntityManagerInterface) {
     throw new LogicException('The default entity manager is missing from the test container.');
 }
 
-$metadata = $entityManager->getMetadataFactory()->getAllMetadata();
-$schemaTool = new SchemaTool($entityManager);
-$schemaTool->dropSchema($metadata);
-$schemaTool->createSchema($metadata);
+// getParams() reads the configured driver without opening a connection.
+$driver = $entityManager->getConnection()->getParams()['driver'] ?? '';
+
+if (is_string($driver) && str_contains($driver, 'sqlite')) {
+    $metadata = $entityManager->getMetadataFactory()->getAllMetadata();
+    $schemaTool = new SchemaTool($entityManager);
+    $schemaTool->dropSchema($metadata);
+    $schemaTool->createSchema($metadata);
+}
 
 $kernel->shutdown();

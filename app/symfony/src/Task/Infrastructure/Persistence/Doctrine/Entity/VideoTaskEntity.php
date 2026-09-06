@@ -18,6 +18,10 @@ use Doctrine\ORM\Mapping as ORM;
 // The retention job scans settled tasks last touched before a cutoff that have
 // not been pruned yet.
 #[ORM\Index(columns: ['pruned_at', 'updated_at'], name: 'idx_video_tasks_pruned_at_updated_at')]
+// The recovery sweep looks for tasks left behind by a publish that never made
+// it to the broker: still pending, or settled with an undelivered callback.
+#[ORM\Index(columns: ['status', 'updated_at'], name: 'idx_video_tasks_status_updated_at')]
+#[ORM\Index(columns: ['callback_notified_at', 'updated_at'], name: 'idx_video_tasks_callback_notified_at_updated_at')]
 class VideoTaskEntity
 {
     #[ORM\Id]
@@ -55,6 +59,14 @@ class VideoTaskEntity
 
     #[ORM\Column(name: 'updated_at', type: Types::DATETIME_IMMUTABLE)]
     public \DateTimeImmutable $updatedAt;
+
+    /**
+     * When the callback for this task was delivered, if it was. Null on a task
+     * that asked for none, and on one whose notification is still owed - which
+     * is what the recovery sweep looks for.
+     */
+    #[ORM\Column(name: 'callback_notified_at', type: Types::DATETIME_IMMUTABLE, nullable: true)]
+    public ?\DateTimeImmutable $callbackNotifiedAt = null;
 
     /** When the retention job deleted this task's videos, if it has. */
     #[ORM\Column(name: 'pruned_at', type: Types::DATETIME_IMMUTABLE, nullable: true)]

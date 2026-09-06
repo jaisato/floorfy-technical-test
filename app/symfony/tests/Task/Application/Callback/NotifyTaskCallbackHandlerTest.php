@@ -145,6 +145,6 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
 
     private function handler(): NotifyTaskCallbackHandler
     {
-        return new NotifyTaskCallbackHandler($this->tasks, $this->partials, $this->delivery, new VideoUrls(new FixedClock(), 'http://localhost:8080', '', 3600), $this->logger);
+        return new NotifyTaskCallbackHandler($this->tasks, $this->partials, $this->delivery, new VideoUrls(new FixedClock(), 'http://localhost:8080', '', 3600), new FixedClock(), $this->logger);
     }
 }

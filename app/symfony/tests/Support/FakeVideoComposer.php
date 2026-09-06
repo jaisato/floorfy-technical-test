@@ -18,15 +18,33 @@ final class FakeVideoComposer implements VideoComposer
 
     private ?\Throwable $failure = null;
 
+    /** @var (callable(): void)|null runs while the composition is "in progress" */
+    private $during;
+
     public function failWith(\Throwable $error): void
     {
         $this->failure = $error;
+    }
+
+    /**
+     * Something that happens while ffmpeg would be running: a cancellation
+     * landing after the last boundary check, for instance.
+     *
+     * @param callable(): void $callback
+     */
+    public function onCompose(callable $callback): void
+    {
+        $this->during = $callback;
     }
 
     public function compose(array $clips, string $outputFile, RenderOptions $options): void
     {
         $this->calls[] = $clips;
         $this->options[] = $options;
+
+        if (null !== $this->during) {
+            ($this->during)();
+        }
 
         if (null !== $this->failure) {
             throw $this->failure;
