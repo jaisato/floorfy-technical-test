@@ -258,10 +258,12 @@ Detalles que conviene conocer:
   **canonicalizado**: en un objeto JSON el orden de las claves no cuenta (dos
   serializaciones del mismo objeto son la misma petición), pero el orden de una
   lista sí (son otras imágenes).
-- Se guarda cualquier respuesta por debajo de 500, **incluidos los 400**: repetir
-  una petición inválida bajo la misma clave devuelve el mismo error, no una tarea.
-  Un 5xx **libera** la clave: el fallo es nuestro y el reintento tiene que
-  ejecutarse de verdad.
+- Se guarda cualquier respuesta que zanje la petición, **incluidos los 400**:
+  repetir una petición inválida bajo la misma clave devuelve el mismo error, no
+  una tarea. Un **5xx** y un **429** **liberan** la clave, porque las dos
+  respuestas invitan a volver: en el 5xx el fallo es nuestro, y guardar el 429
+  dejaría la clave pegada a un «vuelve luego» durante todo el TTL, de modo que
+  la tarea no se crearía nunca por mucho que el cliente esperase.
 - Las claves se guardan **por llamante**, así que dos clientes no pueden
   colisionar eligiendo la misma. Sin autenticación todos los llamantes son el
   mismo (`anonymous`).
@@ -507,6 +509,11 @@ compra minutos de FFmpeg en un worker compartido. Las lecturas no se limitan.
 - Pasado el límite: **429** `problem+json` con `Retry-After`. No se crea nada.
 - El contador es **por llamante**: el nombre del cliente autenticado si lo hay,
   y la IP si la API está abierta.
+- Un **reintento que se responde desde la caché de
+  [`Idempotency-Key`](#idempotencia-idempotency-key) no gasta cuota**: no crea
+  nada. El cliente reintenta precisamente porque no vio la respuesta, y cobrarle
+  ese reintento convertiría el timeout en un 429 sobre una tarea que ya existe.
+  Todo lo que sí podría crear una tarea pasa por el limitador.
 
 ### Salud (`/health`, `/health/ready`)
 
@@ -678,7 +685,18 @@ docker compose exec php php bin/console app:videos:prune --older-than=30d
 La **tarea no se borra**: se queda con `final_video_url` a null y con
 `pruned_at`. Borrar la fila perdería el registro de que el trabajo se hizo y
 dejaría que la misma petición se creara otra vez como nueva. Las tareas en curso
-nunca se tocan: borrar sus ficheros rompería el render en marcha.
+nunca se tocan: borrar sus ficheros rompería el render en marcha. Cada tarea se
+vuelve a leer **bajo el bloqueo de su fila**, dentro de la misma transacción que
+borra: entre listarla y llegar a ella cabe un reintento, y entonces esos
+ficheros no son restos sino la entrada del render que acaba de empezar.
+
+Reintentar una tarea (`POST /api/tasks/{id}/retry`) limpia su `pruned_at`: va a
+tener vídeos otra vez, y dejarlo puesto la excluiría de todas las retenciones
+posteriores, que es justo lo contrario de lo que hace falta.
+
+El comando barre además `public/videos/.staging/`, donde un worker que muere a
+media codificación deja el fichero a medio escribir que ya no publica nadie
+(sólo los anteriores a la ventana, así que un render en marcha nunca entra).
 
 En cron, una vez al día:
 
@@ -709,7 +727,10 @@ docker compose exec php php bin/console app:tasks:recover --stuck-for=10m
 
 Repetirlo es inofensivo: una tarea que ya se está procesando rechaza la
 reclamación, y una notificación ya entregada queda registrada en
-`callback_notified_at` y deja de aparecer. La ventana importa: una tarea
+`callback_notified_at` y deja de aparecer. Reintentar la tarea borra esa marca:
+la ejecución nueva vuelve a terminar y debe su propia notificación, y con la
+marca de la anterior puesta ésa sería la única que este comando no podría
+recuperar nunca. La ventana importa: una tarea
 publicada hace un segundo no está atascada, es nueva, y reencolarla sólo pondría
 a dos workers a competir por una reclamación que uno va a perder. En un
 despliegue sano este comando no encuentra nada, que es también la forma de saber
