@@ -1,3 +1,11 @@
+services:
+    # The idempotency identifiers are declared utf8mb4_bin so they compare byte
+    # for byte; SQLite, which the test profile uses, has that behaviour but not
+    # that name and would refuse the CREATE TABLE. Every other driver passes
+    # through it untouched.
+    App\Shared\Infrastructure\Persistence\Doctrine\Middleware\SqliteBinaryCollationMiddleware:
+        tags: ['doctrine.middleware']
+
 doctrine:
     dbal:
         url: '%env(resolve:DATABASE_URL)%'

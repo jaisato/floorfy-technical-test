@@ -18,13 +18,23 @@ use Doctrine\ORM\Mapping as ORM;
 #[ORM\Index(columns: ['expires_at'], name: 'idx_idempotency_keys_expires_at')]
 class IdempotencyKeyEntity
 {
-    /** Who used the key: the authenticated client, or "anonymous". */
+    /**
+     * Who used the key: the authenticated client, or "anonymous".
+     *
+     * Compared byte for byte, like the key beside it. Under the table's
+     * utf8mb4_unicode_ci, clients configured as `Acme` and `acme` were one
+     * scope and could replay each other's stored responses. Declared here as
+     * well as in the migration because Doctrine puts the connection's default
+     * collation on the mapping side, so leaving it out makes
+     * doctrine:schema:validate report the column as changed.
+     */
     #[ORM\Id]
-    #[ORM\Column(type: Types::STRING, length: 190)]
+    #[ORM\Column(type: Types::STRING, length: 190, options: ['collation' => 'utf8mb4_bin'])]
     public string $scope;
 
+    /** An opaque token the caller chose; `ABC` and `abc` are different keys. */
     #[ORM\Id]
-    #[ORM\Column(name: 'idempotency_key', type: Types::STRING, length: 255)]
+    #[ORM\Column(name: 'idempotency_key', type: Types::STRING, length: 255, options: ['collation' => 'utf8mb4_bin'])]
     public string $idempotencyKey;
 
     /** SHA-256 of method, path and canonical body. */
