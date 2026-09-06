@@ -15,6 +15,12 @@ final class FakeImageAnimator implements ImageAnimator
 
     private ?\Throwable $failure = null;
 
+    /**
+     * ffmpeg writes its output as it encodes, so a run that gives up part way
+     * has already put a truncated file where the finished one was going. The
+     * fake does the same: a failure that left nothing behind would never show
+     * whether the handler cleans up after one that did.
+     */
     public function failWith(\Throwable $error): void
     {
         $this->failure = $error;
@@ -30,6 +36,8 @@ final class FakeImageAnimator implements ImageAnimator
         ];
 
         if (null !== $this->failure) {
+            file_put_contents($outputFile, 'half a clip');
+
             throw $this->failure;
         }
 

@@ -212,6 +212,13 @@ final class VideoTask
      * The reason for the earlier failure is cleared: what the task shows from
      * now on is the outcome of the new attempt. Whatever parts were completed
      * are kept by the caller; this only moves the task itself.
+     *
+     * prunedAt goes with it. It records that this task's videos were deleted,
+     * and a task about to render new ones is not in that state: left set, the
+     * task told clients its files had been reclaimed while it was producing
+     * fresh ones, and - because prunedAt is exactly what excludes a row from
+     * the retention sweep - those new files were the one set nothing would ever
+     * clean up again.
      */
     public function retry(DateTimeValue $now): void
     {
@@ -223,6 +230,19 @@ final class VideoTask
 
         $this->errorMessage = null;
         $this->finalVideoUrl = null;
+        $this->prunedAt = null;
+    }
+
+    /**
+     * Whether the retention job may delete this task's videos right now.
+     *
+     * Asked again under the row lock, because the answer can change between
+     * listing a task and getting to it: a retry moves it out of a settled
+     * status, and its files are then the input of a run in progress.
+     */
+    public function isPrunable(): bool
+    {
+        return null === $this->prunedAt && \in_array($this->status, VideoTaskStatus::settled(), true);
     }
 
     /** @param non-empty-list<VideoTaskStatus> $allowedFrom */

@@ -50,6 +50,39 @@ final class RetryVideoTaskHandlerTest extends TestCase
         self::assertNull($task->finalVideoUrl());
     }
 
+    /**
+     * A task settles once per run and owes the client a notification each time.
+     * The delivery mark is one column, and left over from the run before, it
+     * told the recovery sweep - which looks for settled tasks whose callback
+     * never went out - that this one had already been notified. The second
+     * run's notification was then the one publish nothing could ever recover.
+     */
+    public function testRetryingForgetsThatTheEarlierRunsCallbackWasDelivered(): void
+    {
+        $task = $this->failedTask();
+        $this->tasks->markCallbackNotified($task->id(), $this->clock->now());
+
+        $this->handler()(new RetryVideoTaskCommand($task->id()->value));
+
+        self::assertArrayNotHasKey($task->id()->value, $this->tasks->callbacksNotified);
+    }
+
+    /**
+     * prunedAt says the task's videos were reclaimed, and a task queued for
+     * another run is about to have videos again. Left set it both lied to
+     * clients and - since prunedAt is what excludes a row from the retention
+     * sweep - left the new run's files as the one set nothing would collect.
+     */
+    public function testRetryingClearsTheRecordThatTheVideosWerePruned(): void
+    {
+        $task = $this->failedTask();
+        $task->markPruned($this->clock->now());
+
+        $this->handler()(new RetryVideoTaskCommand($task->id()->value));
+
+        self::assertNull($task->prunedAt());
+    }
+
     public function testACanceledTaskCanBeRetriedToo(): void
     {
         $task = $this->storedTask();

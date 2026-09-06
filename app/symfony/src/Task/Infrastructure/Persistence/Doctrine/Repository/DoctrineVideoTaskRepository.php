@@ -11,9 +11,11 @@ use App\Task\Domain\Enum\VideoTaskStatus;
 use App\Task\Domain\Port\VideoTaskRepository;
 use App\Task\Domain\ValueObject\RenderOptions;
 use App\Task\Infrastructure\Persistence\Doctrine\Entity\VideoTaskEntity;
+use Doctrine\DBAL\LockMode;
 use Doctrine\DBAL\ParameterType;
 use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\Query;
 
 final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
 {
@@ -47,6 +49,27 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
     public function get(UuidValue $id): ?VideoTask
     {
         $entity = $this->em->find(VideoTaskEntity::class, $id->value);
+
+        return $entity instanceof VideoTaskEntity ? $this->toDomain($entity) : null;
+    }
+
+    public function getForUpdate(UuidValue $id): ?VideoTask
+    {
+        // HINT_REFRESH is what makes this a read rather than a formality.
+        // Without it the query takes the lock in the database and then hands
+        // back whatever copy the unit of work is already holding - and the one
+        // caller of this has just listed the task, so it always is holding one.
+        // The row would be locked and the state read from it minutes old,
+        // which is the precise failure the lock is here to prevent.
+        $entity = $this->em->createQueryBuilder()
+            ->select('t')
+            ->from(VideoTaskEntity::class, 't')
+            ->where('t.id = :id')
+            ->setParameter('id', $id->value)
+            ->getQuery()
+            ->setLockMode(LockMode::PESSIMISTIC_WRITE)
+            ->setHint(Query::HINT_REFRESH, true)
+            ->getOneOrNullResult();
 
         return $entity instanceof VideoTaskEntity ? $this->toDomain($entity) : null;
     }
@@ -190,6 +213,17 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
             'UPDATE video_tasks SET callback_notified_at = :now WHERE id = :id',
             ['now' => $now->toDateTimeImmutable(), 'id' => $id->value],
             ['now' => Types::DATETIME_IMMUTABLE, 'id' => ParameterType::STRING],
+        );
+
+        $this->forgetCachedCopy($id);
+    }
+
+    public function clearCallbackNotification(UuidValue $id): void
+    {
+        $this->em->getConnection()->executeStatement(
+            'UPDATE video_tasks SET callback_notified_at = NULL WHERE id = :id',
+            ['id' => $id->value],
+            ['id' => ParameterType::STRING],
         );
 
         $this->forgetCachedCopy($id);

@@ -54,10 +54,20 @@ final readonly class IdempotencyKeyListener
     }
 
     /**
-     * After the router (priority 32) and the firewall (8), so the route is
-     * known and so is the caller.
+     * Below the firewall's 8, so the caller is authenticated and keys are
+     * scoped to a real client name rather than to everyone sharing an address,
+     * and above the rate limiter's 2, so a replay is answered without spending
+     * any of the caller's quota.
+     *
+     * That second half matters more than it looks. A client repeats a request
+     * precisely because it never saw the answer - the timeout it just suffered
+     * is the reason it is retrying - and charging that retry to the quota let a
+     * lost response push a well-behaved client over its limit and turn a replay
+     * into a 429. A replay creates nothing, so it owes nothing. The other way
+     * round, the limiter is still in front of every request that could create a
+     * task: a key nobody has used falls straight through to it.
      */
-    #[AsEventListener(event: KernelEvents::REQUEST, priority: 0)]
+    #[AsEventListener(event: KernelEvents::REQUEST, priority: 4)]
     public function onRequest(RequestEvent $event): void
     {
         $request = $event->getRequest();
@@ -118,8 +128,7 @@ final readonly class IdempotencyKeyListener
         [$scope, $key] = $claim;
         $response = $event->getResponse();
 
-        if ($response->getStatusCode() >= Response::HTTP_INTERNAL_SERVER_ERROR) {
-            // Something broke on our side; the client's retry should run for real.
+        if (self::isRetryable($response->getStatusCode())) {
             $this->store->release($scope, $key);
 
             return;
@@ -131,5 +140,21 @@ final readonly class IdempotencyKeyListener
     private static function isIdempotentRoute(Request $request): bool
     {
         return \in_array($request->attributes->get('_route'), self::IDEMPOTENT_ROUTES, true);
+    }
+
+    /**
+     * Whether an answer invites the client to come back rather than settling
+     * the request, in which case the key must not be pinned to it.
+     *
+     * A 5xx is something that broke on our side. A 429 is the rate limiter,
+     * which now runs after this listener and so can refuse a request whose key
+     * is already claimed: stored, that 429 would be replayed for the whole TTL
+     * and the task would never be created however long the client waited.
+     * Every other answer, a validation error included, is this request's final
+     * one and is what a repeat of it deserves to be told again.
+     */
+    private static function isRetryable(int $status): bool
+    {
+        return $status >= Response::HTTP_INTERNAL_SERVER_ERROR || Response::HTTP_TOO_MANY_REQUESTS === $status;
     }
 }

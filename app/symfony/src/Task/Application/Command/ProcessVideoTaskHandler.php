@@ -201,6 +201,10 @@ final readonly class ProcessVideoTaskHandler
         try {
             $this->composer->compose($clips, $staged, $options);
         } catch (\Throwable $e) {
+            // ffmpeg writes its output as it goes, so a run that failed part
+            // way through leaves a truncated file under a name nothing will
+            // ever publish or read again.
+            @unlink($staged);
             $this->logFailure('Composition failed', $e, ['task_id' => $task->id()->value]);
 
             throw TaskProcessingFailed::compositionFailed();
@@ -256,6 +260,12 @@ final readonly class ProcessVideoTaskHandler
 
         try {
             $this->animator->animate($image, $partial->transition(), $staged, $partial->renderOptions($options));
+        } catch (\Throwable $e) {
+            // Same as the composition step: whatever ffmpeg managed to write
+            // before it gave up is a truncated file nothing will publish.
+            @unlink($staged);
+
+            throw $e;
         } finally {
             // The source image is of no use once the clip exists, and every
             // retry downloads a fresh copy anyway.

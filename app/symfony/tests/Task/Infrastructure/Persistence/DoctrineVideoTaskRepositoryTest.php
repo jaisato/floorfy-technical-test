@@ -10,6 +10,7 @@ use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\Enum\VideoTaskStatus;
 use App\Task\Domain\Port\VideoTaskRepository;
 use App\Tests\Support\DatabaseTestCase;
+use Doctrine\ORM\TransactionRequiredException;
 use PHPUnit\Framework\Attributes\Group;
 
 final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
@@ -220,6 +221,62 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
 
         self::assertSame(VideoTaskStatus::CANCELED, $this->repository->currentStatus($task->id()));
         self::assertNull($this->repository->currentStatus(UuidValue::new()));
+    }
+
+    /**
+     * The mark is one column per task and a task settles once per run, so the
+     * recovery sweep - which looks for settled tasks whose callback never went
+     * out - can only see the second run's lost notification once the first
+     * run's mark is gone.
+     */
+    public function testTheCallbackMarkCanBeWrittenAndTakenBackOff(): void
+    {
+        $task = $this->storedTask();
+
+        $this->repository->markCallbackNotified($task->id(), $this->now);
+        self::assertNotNull($this->connection()->fetchOne('SELECT callback_notified_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
+
+        $this->repository->clearCallbackNotification($task->id());
+        self::assertNull($this->connection()->fetchOne('SELECT callback_notified_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
+    }
+
+    /**
+     * The locked read goes to the database, not to the identity map: a lock
+     * cannot be taken over a copy the unit of work is already holding, and the
+     * retention job asks for one precisely because its own copy may be stale.
+     *
+     * The transaction is not scenery. A row lock outside one would be released
+     * by the very next statement, so Doctrine refuses to pretend - which is
+     * what makes the retention job's transaction load-bearing rather than
+     * decorative.
+     */
+    public function testTheLockedReadSeesTheRowRatherThanTheLoadedCopy(): void
+    {
+        $task = $this->storedTask();
+        $this->repository->get($task->id());
+        $this->connection()->executeStatement('UPDATE video_tasks SET status = ? WHERE id = ?', ['canceled', $task->id()->value]);
+
+        $this->connection()->beginTransaction();
+
+        try {
+            $locked = $this->repository->getForUpdate($task->id());
+
+            self::assertNotNull($locked);
+            self::assertSame(VideoTaskStatus::CANCELED, $locked->status());
+            self::assertNull($this->repository->getForUpdate(UuidValue::new()));
+        } finally {
+            $this->connection()->rollBack();
+        }
+    }
+
+    /** Without one there is no lock to take, and a silent read would be a lie. */
+    public function testTheLockedReadRefusesToRunOutsideATransaction(): void
+    {
+        $task = $this->storedTask();
+
+        $this->expectException(TransactionRequiredException::class);
+
+        $this->repository->getForUpdate($task->id());
     }
 
     /**

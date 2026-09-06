@@ -94,6 +94,49 @@ final class CreateTaskRateLimitTest extends WebTestCase
         self::assertSame(1, $this->taskCount());
     }
 
+    /**
+     * A client repeats a request because it never saw the answer, and the
+     * answer it gets back creates nothing. Charged to the quota, the very
+     * timeout Idempotency-Key exists to paper over could push a well-behaved
+     * client over its limit and turn the replay into a 429 - a task created,
+     * an answer stored, and a client refused the only copy of it.
+     */
+    public function testAReplayDoesNotSpendTheCallersQuota(): void
+    {
+        $this->clientWithLimit(1);
+
+        $this->createTask('the-lost-answer');
+        self::assertResponseStatusCodeSame(Response::HTTP_CREATED);
+
+        $this->createTask('the-lost-answer');
+
+        self::assertResponseStatusCodeSame(Response::HTTP_CREATED);
+        self::assertSame('true', $this->client()->getResponse()->headers->get('Idempotency-Replayed'));
+        self::assertSame(1, $this->taskCount());
+    }
+
+    /**
+     * The other half of that order: the claim taken for a request the limiter
+     * then refuses is given back. Stored, the 429 would be the answer replayed
+     * for the whole TTL and the task would never be created, however long the
+     * client waited out the window it was told to wait out.
+     */
+    public function testARefusedRequestDoesNotPinItsKeyToThe429(): void
+    {
+        $this->clientWithLimit(1);
+
+        $this->createTask('first');
+        $this->createTask('refused');
+        self::assertResponseStatusCodeSame(Response::HTTP_TOO_MANY_REQUESTS);
+
+        // The window is a minute, so nothing here can wait it out; what this
+        // asks is only that the key is free again, not that it is replayed.
+        $this->createTask('refused');
+
+        self::assertResponseStatusCodeSame(Response::HTTP_TOO_MANY_REQUESTS);
+        self::assertNull($this->client()->getResponse()->headers->get('Idempotency-Replayed'));
+    }
+
     /** Reads are cheap; only the request that starts ffmpeg is counted. */
     public function testReadsAreNotLimited(): void
     {
@@ -121,12 +164,18 @@ final class CreateTaskRateLimitTest extends WebTestCase
         $connection->executeStatement('DELETE FROM video_tasks');
     }
 
-    private function createTask(): void
+    private function createTask(?string $idempotencyKey = null): void
     {
+        $server = ['CONTENT_TYPE' => 'application/json'];
+
+        if (null !== $idempotencyKey) {
+            $server['HTTP_IDEMPOTENCY_KEY'] = $idempotencyKey;
+        }
+
         $this->client()->request(
             'POST',
             '/api/tasks',
-            server: ['CONTENT_TYPE' => 'application/json'],
+            server: $server,
             content: '{"images":[{"url":"https://example.com/a.png","transition":"pan"}]}',
         );
     }

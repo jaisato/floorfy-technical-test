@@ -26,6 +26,14 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
     /** @var array<string, DateTimeValue> when each task's callback was delivered */
     public array $callbacksNotified = [];
 
+    /**
+     * Run just before getForUpdate() hands a row back, so a test can change the
+     * task in the moment the caller believes it is holding it still.
+     *
+     * @var (callable(UuidValue): void)|null
+     */
+    public $beforeLockedRead;
+
     public function save(VideoTask $task): void
     {
         ++$this->saves;
@@ -34,6 +42,20 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
 
     public function get(UuidValue $id): ?VideoTask
     {
+        return $this->tasks[$id->value] ?? null;
+    }
+
+    /**
+     * There is no second process here to lock anything out, so the row is read
+     * like any other - through the hook above, which is how a test puts a
+     * concurrent change in the window between listing a task and locking it.
+     */
+    public function getForUpdate(UuidValue $id): ?VideoTask
+    {
+        if (null !== $this->beforeLockedRead) {
+            ($this->beforeLockedRead)($id);
+        }
+
         return $this->tasks[$id->value] ?? null;
     }
 
@@ -167,6 +189,11 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
     public function markCallbackNotified(UuidValue $id, DateTimeValue $now): void
     {
         $this->callbacksNotified[$id->value] = $now;
+    }
+
+    public function clearCallbackNotification(UuidValue $id): void
+    {
+        unset($this->callbacksNotified[$id->value]);
     }
 
     public function listUnclaimedSince(DateTimeValue $before, int $limit): array
