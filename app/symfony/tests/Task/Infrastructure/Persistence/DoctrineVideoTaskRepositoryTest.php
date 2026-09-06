@@ -322,6 +322,51 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
     }
 
     /**
+     * A retry between the listing and the claim takes the notification back.
+     *
+     * The three callback columns alone did not say so: retrying clears all
+     * three, so the claim landed on a task that was pending again, and the
+     * sweep published the *listed* object's terminal status while the handler
+     * built the body from the run now under way - the client told the task had
+     * failed as it started over. The claim repeats every clause of the
+     * listing, which is what makes the retry win it.
+     */
+    public function testARetryBetweenTheListingAndTheClaimTakesTheNotificationBack(): void
+    {
+        // Failed rather than completed: retrying is what a failed task does.
+        $task = VideoTask::create(['images' => []], $this->now, 'https://client.example/hook');
+        $task->markProcessing($this->now);
+        $task->markFailed('boom', $this->now);
+        $this->repository->save($task);
+        $cutoff = $this->now->minusSeconds(-60);
+
+        // Listed as owed, and it is.
+        self::assertCount(1, $this->repository->listAwaitingCallback($cutoff, 10));
+
+        // Then the retry lands: pending again, and its callback state cleared.
+        $this->repository->clearCallbackNotification($task->id());
+        $task->retry($cutoff);
+        $this->repository->save($task);
+
+        self::assertFalse(
+            $this->repository->claimCallbackNotification($task->id(), $cutoff, $this->now),
+            'the run the notification was listed for is not the run there now',
+        );
+        self::assertNull($this->connection()->fetchOne('SELECT callback_attempted_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
+    }
+
+    /** A task that asked for no callback is nothing to claim either. */
+    public function testATaskWithoutACallbackUrlIsNotClaimable(): void
+    {
+        $task = $this->storedTask();
+        $task->markProcessing($this->now);
+        $task->markCompleted('/videos/final.mp4', $this->now);
+        $this->repository->save($task);
+
+        self::assertFalse($this->repository->claimCallbackNotification($task->id(), $this->now->minusSeconds(-60), $this->now));
+    }
+
+    /**
      * The verdict on a notification nothing can deliver, and the same round
      * trip: written under the run's fence, and taken back off when the task is
      * queued again - the URL is re-checked on the next delivery and the signing

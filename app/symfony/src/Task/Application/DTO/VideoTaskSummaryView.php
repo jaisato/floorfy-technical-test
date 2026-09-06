@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Task\Application\DTO;
 
+use App\Shared\Application\Redaction\Urls;
 use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\ValueObject\TaskProgress;
@@ -62,7 +63,15 @@ final readonly class VideoTaskSummaryView
             'progress' => $this->progress->toArray(),
             'final_video_url' => $this->finalVideoUrl,
             'error' => $this->error,
-            'callback_url' => $this->callbackUrl,
+            // The endpoint, never the credential. A callback URL is the
+            // client's own and routinely carries a token in its userinfo or
+            // its query, and this field is served by GET /api/tasks/{id} and
+            // by every item of GET /api/tasks - on an API that is open unless
+            // a key is configured, and shared between clients when it is. Whole,
+            // it let anyone who could list tasks harvest token-bearing webhook
+            // URLs without knowing a single id. Redacted it still answers what
+            // the field is for: which endpoint this task notifies.
+            'callback_url' => null === $this->callbackUrl ? null : Urls::endpoint($this->callbackUrl),
             'created_at' => $this->createdAt,
             'updated_at' => $this->updatedAt,
             // Why a completed task can have no video URL.

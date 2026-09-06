@@ -81,6 +81,41 @@ final class TaskControllerTest extends ApiTestCase
         self::assertSame('https://8.8.8.8/hooks/video-tasks', $this->responseBody()['callback_url']);
     }
 
+    /**
+     * A callback URL is the client's own, and a token in its userinfo or its
+     * query is the ordinary way to write one. Served whole, GET /api/tasks/{id}
+     * and every item of GET /api/tasks handed that credential to whoever
+     * asked - and the listing needs no id, on an API that is open unless a key
+     * is configured and shared between clients when it is. The endpoint is
+     * still named, which is what the field is for.
+     */
+    public function testACallbackUrlIsServedWithoutItsCredentials(): void
+    {
+        $this->json('POST', '/api/tasks', [
+            'images' => [['url' => 'https://example.com/a.png', 'transition' => 'zoom_in']],
+            'callback_url' => 'https://bot:s3cr3t@8.8.8.8/hooks/video-tasks?token=deadbeef',
+        ]);
+        $this->assertStatus(Response::HTTP_CREATED);
+        $taskId = $this->responseBody()['task_id'];
+
+        $this->client->request('GET', '/api/tasks/'.$taskId);
+        self::assertSame('https://8.8.8.8/hooks/video-tasks?…', $this->responseBody()['callback_url']);
+        $this->assertNothingSecretInTheResponse();
+
+        // The listing is the one an unrelated caller reaches without knowing an id.
+        $this->client->request('GET', '/api/tasks');
+        $this->assertNothingSecretInTheResponse();
+        self::assertSame('https://8.8.8.8/hooks/video-tasks?…', $this->responseBody()['items'][0]['callback_url']);
+    }
+
+    private function assertNothingSecretInTheResponse(): void
+    {
+        $content = (string) $this->client->getResponse()->getContent();
+
+        self::assertStringNotContainsString('s3cr3t', $content);
+        self::assertStringNotContainsString('deadbeef', $content);
+    }
+
     public function testATaskWithoutACallbackUrlReportsNone(): void
     {
         $taskId = $this->createTask();
