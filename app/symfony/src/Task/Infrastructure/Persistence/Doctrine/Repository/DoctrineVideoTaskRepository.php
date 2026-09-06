@@ -28,6 +28,7 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
             $entity = new VideoTaskEntity();
             $entity->id = $task->id()->value;
             $entity->payload = $task->payload();
+            $entity->callbackUrl = $task->callbackUrl();
             $entity->createdAt = $task->createdAt()->toDateTimeImmutable();
             $this->em->persist($entity);
         }
@@ -188,6 +189,7 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
             $e->errorMessage,
             DateTimeValue::fromDateTimeImmutable($e->createdAt),
             DateTimeValue::fromDateTimeImmutable($e->updatedAt),
+            $e->callbackUrl,
         );
     }
 }

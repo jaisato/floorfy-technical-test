@@ -87,11 +87,12 @@ final class GetVideoTaskHandlerTest extends TestCase
             'progress' => ['completed' => 1, 'failed' => 1, 'pending' => 1, 'total' => 3, 'percent' => 33],
             'final_video_url' => null,
             'error' => null,
+            'callback_url' => null,
             'created_at' => '2026-01-02T03:04:05+00:00',
             'updated_at' => '2026-01-02T03:04:05+00:00',
         ], $view->summary->toArray());
         self::assertSame(
-            ['task_id', 'status', 'progress', 'final_video_url', 'error', 'created_at', 'updated_at', 'partial_videos'],
+            ['task_id', 'status', 'progress', 'final_video_url', 'error', 'callback_url', 'created_at', 'updated_at', 'partial_videos'],
             array_keys($view->toArray()),
         );
     }

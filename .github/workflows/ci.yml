@@ -109,6 +109,7 @@ jobs:
     env:
       DATABASE_URL: 'mysql://app:app@127.0.0.1:3306/app_test?serverVersion=8.0&charset=utf8mb4'
       MESSENGER_TRANSPORT_DSN: 'amqp://app:app@127.0.0.1:5672/%2f/messages'
+      MESSENGER_CALLBACKS_TRANSPORT_DSN: 'amqp://app:app@127.0.0.1:5672/%2f/callbacks'
       MESSENGER_FAILURE_TRANSPORT_DSN: 'amqp://app:app@127.0.0.1:5672/%2f/failed'
 
     steps:

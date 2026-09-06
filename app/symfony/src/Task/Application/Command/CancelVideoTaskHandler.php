@@ -6,6 +6,7 @@ namespace App\Task\Application\Command;
 
 use App\Shared\Application\Clock\Clock;
 use App\Shared\Domain\ValueObject\UuidValue;
+use App\Task\Application\Callback\TaskCallbacks;
 use App\Task\Domain\Enum\VideoTaskStatus;
 use App\Task\Domain\Exception\InvalidTaskTransition;
 use App\Task\Domain\Exception\TaskNotFound;
@@ -27,6 +28,7 @@ final readonly class CancelVideoTaskHandler
     public function __construct(
         private VideoTaskRepository $tasks,
         private Clock $clock,
+        private TaskCallbacks $callbacks,
     ) {
     }
 
@@ -45,5 +47,7 @@ final readonly class CancelVideoTaskHandler
         if (!$this->tasks->cancel($id, $now)) {
             throw InvalidTaskTransition::between($this->tasks->currentStatus($id) ?? VideoTaskStatus::CANCELED, VideoTaskStatus::CANCELED);
         }
+
+        $this->callbacks->notify($task);
     }
 }

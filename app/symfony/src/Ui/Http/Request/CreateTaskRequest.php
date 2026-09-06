@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Ui\Http\Request;
 
 use App\Task\Domain\Enum\Transition;
+use App\Ui\Http\Validation\PublicHttpUrl;
 use Symfony\Component\Validator\Constraints as Assert;
 
 final class CreateTaskRequest
@@ -60,12 +61,39 @@ final class CreateTaskRequest
             ),
         ])]
         public mixed $images,
+        /**
+         * Optional. Where the outcome is POSTed; faces the same rules as the
+         * image URLs, checked here because a callback nobody can reach is only
+         * discovered when there is nobody left to tell.
+         *
+         * No TLD is demanded of it: a receiver named by a public address literal
+         * is a legitimate receiver, and whether the host is reachable at all is
+         * the guard's call, not a spelling rule's.
+         */
+        #[Assert\NotBlank(allowNull: true, message: 'El campo "callback_url" no puede estar vacío.')]
+        #[Assert\Type(type: 'string', message: 'El campo "callback_url" debe ser una URL.')]
+        #[Assert\Length(max: self::MAX_URL_LENGTH)]
+        #[Assert\Url(requireTld: false, message: 'El campo "callback_url" debe ser una URL http o https.')]
+        #[PublicHttpUrl]
+        public mixed $callbackUrl = null,
     ) {
     }
 
     public static function fromArray(mixed $payload): self
     {
-        return new self(\is_array($payload) ? ($payload['images'] ?? null) : null);
+        if (!\is_array($payload)) {
+            return new self(null);
+        }
+
+        // An explicit null is the same as leaving it out; an empty string is
+        // not a URL and is left for the constraints to refuse.
+        return new self($payload['images'] ?? null, $payload['callback_url'] ?? null);
+    }
+
+    /** Only safe to call once the validator has accepted this object. */
+    public function callbackUrl(): ?string
+    {
+        return \is_string($this->callbackUrl) ? $this->callbackUrl : null;
     }
 
     /** @return list<string> */

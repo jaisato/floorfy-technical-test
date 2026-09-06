@@ -41,6 +41,7 @@ final class TaskPageTest extends TestCase
             TaskProgress::ofCounts(0, 0, 2),
             null,
             null,
+            null,
             '2026-01-02T03:04:05+00:00',
             '2026-01-02T03:04:05+00:00',
         );

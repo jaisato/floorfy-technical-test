@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Tests\Task\Application\Command;
 
+use App\Task\Application\Callback\NotifyTaskCallback;
+use App\Task\Application\Callback\TaskCallbacks;
 use App\Task\Application\Command\CancelVideoTaskCommand;
 use App\Task\Application\Command\CancelVideoTaskHandler;
 use App\Task\Domain\Entity\VideoTask;
@@ -12,17 +14,47 @@ use App\Task\Domain\Exception\InvalidTaskTransition;
 use App\Task\Domain\Exception\TaskNotFound;
 use App\Tests\Support\FixedClock;
 use App\Tests\Support\InMemoryVideoTaskRepository;
+use App\Tests\Support\RecordingMessageBus;
 use PHPUnit\Framework\TestCase;
 
 final class CancelVideoTaskHandlerTest extends TestCase
 {
     private InMemoryVideoTaskRepository $tasks;
     private FixedClock $clock;
+    private RecordingMessageBus $bus;
 
     protected function setUp(): void
     {
         $this->tasks = new InMemoryVideoTaskRepository();
         $this->clock = new FixedClock();
+        $this->bus = new RecordingMessageBus();
+    }
+
+    public function testTheCancellationIsNotifiedToTheTasksCallbackUrl(): void
+    {
+        $task = VideoTask::create(['images' => []], $this->clock->now(), 'https://client.example/hook');
+        $this->tasks->save($task);
+
+        $this->handler()(new CancelVideoTaskCommand($task->id()->value));
+
+        self::assertCount(1, $this->bus->dispatched);
+        self::assertInstanceOf(NotifyTaskCallback::class, $this->bus->dispatched[0]);
+        self::assertSame('canceled', $this->bus->dispatched[0]->event);
+    }
+
+    public function testARefusedCancellationNotifiesNobody(): void
+    {
+        $task = VideoTask::create(['images' => []], $this->clock->now(), 'https://client.example/hook');
+        $task->markFailed('boom', $this->clock->now());
+        $this->tasks->save($task);
+
+        try {
+            $this->handler()(new CancelVideoTaskCommand($task->id()->value));
+        } catch (InvalidTaskTransition) {
+            // expected
+        }
+
+        self::assertSame([], $this->bus->dispatched);
     }
 
     public function testAPendingTaskIsCanceled(): void
@@ -113,6 +145,6 @@ final class CancelVideoTaskHandlerTest extends TestCase
 
     private function handler(): CancelVideoTaskHandler
     {
-        return new CancelVideoTaskHandler($this->tasks, $this->clock);
+        return new CancelVideoTaskHandler($this->tasks, $this->clock, new TaskCallbacks($this->bus));
     }
 }

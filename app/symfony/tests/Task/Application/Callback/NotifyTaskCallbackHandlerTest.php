@@ -1,0 +1,148 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Tests\Task\Application\Callback;
+
+use App\Shared\Domain\ValueObject\DateTimeValue;
+use App\Task\Application\Callback\CallbackDeliveryFailed;
+use App\Task\Application\Callback\NotifyTaskCallback;
+use App\Task\Application\Callback\NotifyTaskCallbackHandler;
+use App\Task\Domain\Entity\PartialVideo;
+use App\Task\Domain\Entity\VideoTask;
+use App\Task\Domain\Enum\Transition;
+use App\Tests\Support\FakeCallbackDelivery;
+use App\Tests\Support\InMemoryPartialVideoRepository;
+use App\Tests\Support\InMemoryVideoTaskRepository;
+use App\Tests\Support\RecordingLogger;
+use PHPUnit\Framework\TestCase;
+use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
+
+final class NotifyTaskCallbackHandlerTest extends TestCase
+{
+    private InMemoryVideoTaskRepository $tasks;
+    private InMemoryPartialVideoRepository $partials;
+    private FakeCallbackDelivery $delivery;
+    private RecordingLogger $logger;
+    private DateTimeValue $now;
+
+    protected function setUp(): void
+    {
+        $this->tasks = new InMemoryVideoTaskRepository();
+        $this->partials = new InMemoryPartialVideoRepository();
+        $this->delivery = new FakeCallbackDelivery();
+        $this->logger = new RecordingLogger();
+        $this->now = DateTimeValue::fromString('2026-01-02T03:04:05+00:00');
+    }
+
+    public function testItDeliversTheCurrentSummaryToTheTasksCallbackUrl(): void
+    {
+        $task = VideoTask::create(['images' => []], $this->now, 'https://client.example/hook');
+        $task->markProcessing($this->now);
+        $task->markCompleted('http://localhost/videos/final.mp4', $this->now);
+        $this->tasks->save($task);
+
+        $part = PartialVideo::create($task->id(), 'https://example.com/a.png', Transition::PAN, 0, $this->now);
+        $part->markCompleted('/videos/partial_a.mp4', $this->now);
+        $this->partials->save($part);
+
+        $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+
+        self::assertCount(1, $this->delivery->delivered);
+        $request = $this->delivery->delivered[0];
+        self::assertSame('https://client.example/hook', $request->url);
+        self::assertSame($task->id()->value, $request->taskId);
+        self::assertSame('completed', $request->event);
+        self::assertSame('completed', $request->body['status']);
+        self::assertSame('http://localhost/videos/final.mp4', $request->body['final_video_url']);
+        self::assertSame(['completed' => 1, 'failed' => 0, 'pending' => 0, 'total' => 1, 'percent' => 100], $request->body['progress']);
+        self::assertArrayNotHasKey('partial_videos', $request->body, 'the body is the summary, not the full view');
+    }
+
+    /** The event is what happened; the body is how the task is now - the two can differ after a retry. */
+    public function testTheEventTravelsSeparatelyFromTheCurrentStatus(): void
+    {
+        $task = VideoTask::create(['images' => []], $this->now, 'https://client.example/hook');
+        $task->markFailed('boom', $this->now);
+        $task->retry($this->now);
+        $this->tasks->save($task);
+
+        $this->handler()(new NotifyTaskCallback($task->id()->value, 'failed'));
+
+        self::assertSame('failed', $this->delivery->delivered[0]->event);
+        self::assertSame('pending', $this->delivery->delivered[0]->body['status']);
+    }
+
+    public function testATaskWithoutACallbackUrlIsAcknowledgedSilently(): void
+    {
+        $task = VideoTask::create(['images' => []], $this->now);
+        $this->tasks->save($task);
+
+        $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+
+        self::assertSame([], $this->delivery->delivered);
+    }
+
+    /** Retrying cannot make a missing task appear. */
+    public function testAMissingTaskIsUnrecoverable(): void
+    {
+        $this->expectException(UnrecoverableMessageHandlingException::class);
+
+        $this->handler()(new NotifyTaskCallback('0195c6a0-1c37-7000-8000-0000000000ff', 'completed'));
+    }
+
+    public function testAPermanentDeliveryFailureIsNotRetried(): void
+    {
+        $task = $this->taskWithCallback();
+        $this->delivery->failWith(CallbackDeliveryFailed::refused('http://10.0.0.1/hook', new \RuntimeException('private')));
+
+        try {
+            $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+            self::fail('a refused URL must be reported');
+        } catch (UnrecoverableMessageHandlingException $e) {
+            self::assertInstanceOf(CallbackDeliveryFailed::class, $e->getPrevious());
+        }
+
+        self::assertStringContainsString('Callback delivery failed', $this->logger->everythingLogged());
+    }
+
+    /** A 503 from the receiver propagates as is, so the transport retries it. */
+    public function testATransientDeliveryFailureIsRethrownForTheTransportToRetry(): void
+    {
+        $task = $this->taskWithCallback();
+        $this->delivery->failWith(CallbackDeliveryFailed::status('https://client.example/hook', 503));
+
+        $this->expectException(CallbackDeliveryFailed::class);
+
+        $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+    }
+
+    /** Whatever the delivery does, the task itself is never touched. */
+    public function testAFailedDeliveryLeavesTheTaskAlone(): void
+    {
+        $task = $this->taskWithCallback();
+        $this->tasks->saves = 0;
+        $this->delivery->failWith(CallbackDeliveryFailed::status('https://client.example/hook', 500));
+
+        try {
+            $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed'));
+        } catch (CallbackDeliveryFailed) {
+            // expected
+        }
+
+        self::assertSame(0, $this->tasks->saves);
+    }
+
+    private function taskWithCallback(): VideoTask
+    {
+        $task = VideoTask::create(['images' => []], $this->now, 'https://client.example/hook');
+        $this->tasks->save($task);
+
+        return $task;
+    }
+
+    private function handler(): NotifyTaskCallbackHandler
+    {
+        return new NotifyTaskCallbackHandler($this->tasks, $this->partials, $this->delivery, $this->logger);
+    }
+}

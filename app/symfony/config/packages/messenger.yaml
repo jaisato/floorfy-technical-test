@@ -27,6 +27,18 @@ framework:
                     multiplier: 2
                     max_delay: 600000
 
+            callbacks:
+                dsn: '%env(MESSENGER_CALLBACKS_TRANSPORT_DSN)%'
+                retry_strategy:
+                    # A webhook endpoint that is down comes back in minutes,
+                    # not hours: six attempts from 30s to a 10-minute ceiling,
+                    # then the failed queue. Its own transport so that a broken
+                    # endpoint never queues behind video work, or vice versa.
+                    max_retries: 5
+                    delay: 30000
+                    multiplier: 2
+                    max_delay: 600000
+
             failed:
                 dsn: '%env(MESSENGER_FAILURE_TRANSPORT_DSN)%'
                 retry_strategy:
@@ -35,3 +47,4 @@ framework:
 
         routing:
             App\Task\Application\Command\ProcessVideoTaskCommand: async
+            App\Task\Application\Callback\NotifyTaskCallback: callbacks

@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Tests\Task\Infrastructure\Messenger;
 
 use App\Shared\Domain\ValueObject\DateTimeValue;
+use App\Task\Application\Callback\NotifyTaskCallback;
+use App\Task\Application\Callback\TaskCallbacks;
 use App\Task\Application\Command\ProcessVideoTaskCommand;
 use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\Enum\VideoTaskStatus;
@@ -12,6 +14,7 @@ use App\Task\Domain\Exception\TaskProcessingFailed;
 use App\Task\Infrastructure\Messenger\MarkTaskFailedWhenRetriesAreExhausted;
 use App\Tests\Support\FixedClock;
 use App\Tests\Support\InMemoryVideoTaskRepository;
+use App\Tests\Support\RecordingMessageBus;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Event\WorkerMessageFailedEvent;
@@ -27,11 +30,36 @@ final class MarkTaskFailedWhenRetriesAreExhaustedTest extends TestCase
 {
     private InMemoryVideoTaskRepository $tasks;
     private FixedClock $clock;
+    private RecordingMessageBus $bus;
 
     protected function setUp(): void
     {
         $this->tasks = new InMemoryVideoTaskRepository();
         $this->clock = new FixedClock();
+        $this->bus = new RecordingMessageBus();
+    }
+
+    /** The terminal status is the moment the client who asked is told. */
+    public function testTheFailureIsNotifiedToTheTasksCallbackUrl(): void
+    {
+        $task = VideoTask::create(['images' => []], DateTimeValue::fromString('2026-01-02T03:04:05+00:00'), 'https://client.example/hook');
+        $this->tasks->save($task);
+
+        $this->listener()($this->failure($task->id()->value, new \RuntimeException('boom')));
+
+        self::assertCount(1, $this->bus->dispatched);
+        self::assertInstanceOf(NotifyTaskCallback::class, $this->bus->dispatched[0]);
+        self::assertSame('failed', $this->bus->dispatched[0]->event);
+    }
+
+    public function testAnAttemptThatWillBeRetriedNotifiesNobody(): void
+    {
+        $task = VideoTask::create(['images' => []], DateTimeValue::fromString('2026-01-02T03:04:05+00:00'), 'https://client.example/hook');
+        $this->tasks->save($task);
+
+        $this->listener()($this->failure($task->id()->value, new \RuntimeException('boom'), willRetry: true));
+
+        self::assertSame([], $this->bus->dispatched);
     }
 
     public function testATaskIsLeftAloneWhileAnotherAttemptIsStillComing(): void
@@ -170,6 +198,6 @@ final class MarkTaskFailedWhenRetriesAreExhaustedTest extends TestCase
 
     private function listener(): MarkTaskFailedWhenRetriesAreExhausted
     {
-        return new MarkTaskFailedWhenRetriesAreExhausted($this->tasks, $this->clock);
+        return new MarkTaskFailedWhenRetriesAreExhausted($this->tasks, $this->clock, new TaskCallbacks($this->bus));
     }
 }

@@ -34,6 +34,10 @@ class VideoTaskEntity
     #[ORM\Column(name: 'error_message', type: Types::TEXT, nullable: true)]
     public ?string $errorMessage = null;
 
+    /** As wide as the image URLs: the same validator bounds both. */
+    #[ORM\Column(name: 'callback_url', type: Types::STRING, length: 2048, nullable: true)]
+    public ?string $callbackUrl = null;
+
     #[ORM\Column(name: 'created_at', type: Types::DATETIME_IMMUTABLE)]
     public \DateTimeImmutable $createdAt;
 

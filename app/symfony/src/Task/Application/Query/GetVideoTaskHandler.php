@@ -9,10 +9,8 @@ use App\Task\Application\DTO\PartialVideoView;
 use App\Task\Application\DTO\VideoTaskSummaryView;
 use App\Task\Application\DTO\VideoTaskView;
 use App\Task\Domain\Entity\PartialVideo;
-use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\Port\PartialVideoRepository;
 use App\Task\Domain\Port\VideoTaskRepository;
-use App\Task\Domain\ValueObject\TaskProgress;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 
@@ -49,22 +47,8 @@ final readonly class GetVideoTaskHandler
         $partials = $this->partials->listByTaskId($id);
 
         return new VideoTaskView(
-            self::summary($task, $partials),
+            VideoTaskSummaryView::fromTask($task, $partials),
             array_map($this->toView(...), $partials),
-        );
-    }
-
-    /** @param list<PartialVideo> $partials */
-    private static function summary(VideoTask $task, array $partials): VideoTaskSummaryView
-    {
-        return new VideoTaskSummaryView(
-            $task->id()->value,
-            $task->status()->value,
-            TaskProgress::ofParts($partials),
-            $task->finalVideoUrl(),
-            $task->errorMessage(),
-            $task->createdAt()->toIso8601(),
-            $task->updatedAt()->toIso8601(),
         );
     }
 

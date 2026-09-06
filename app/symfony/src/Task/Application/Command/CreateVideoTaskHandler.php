@@ -34,7 +34,7 @@ final readonly class CreateVideoTaskHandler
         // parts is a task the worker can never finish, and it used to be
         // reachable by any error in the middle of the loop.
         $task = $this->transaction->run(function () use ($command, $now): VideoTask {
-            $task = VideoTask::create(['images' => $command->images], $now);
+            $task = VideoTask::create(['images' => $command->images], $now, $command->callbackUrl);
             $this->tasks->save($task);
 
             $partials = [];

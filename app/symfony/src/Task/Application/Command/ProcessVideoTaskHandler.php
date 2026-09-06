@@ -8,6 +8,7 @@ use App\Shared\Application\Clock\Clock;
 use App\Shared\Domain\Exception\ClientSafe;
 use App\Shared\Domain\Exception\HasOperatorDetail;
 use App\Shared\Domain\ValueObject\UuidValue;
+use App\Task\Application\Callback\TaskCallbacks;
 use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\Enum\VideoTaskStatus;
@@ -52,6 +53,7 @@ final readonly class ProcessVideoTaskHandler
         private ImageFetcher $images,
         private ImageAnimator $animator,
         private VideoComposer $composer,
+        private TaskCallbacks $callbacks,
         #[Autowire(param: 'app.videos_dir')]
         private string $videosDir,
         #[Autowire(param: 'app.public_base_url')]
@@ -182,6 +184,7 @@ final readonly class ProcessVideoTaskHandler
 
         $task->markCompleted(rtrim($this->publicBaseUrl, '/').'/videos/'.$name, $this->clock->now());
         $this->tasks->save($task);
+        $this->callbacks->notify($task);
 
         $this->logger->info('Task completed', [
             'task_id' => $task->id()->value,
