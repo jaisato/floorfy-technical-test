@@ -43,6 +43,14 @@ x-app-environment: &app-environment
   RENDER_DEFAULT_FPS: ${RENDER_DEFAULT_FPS:-30}
   RENDER_DEFAULT_RESOLUTION: ${RENDER_DEFAULT_RESOLUTION:-1280x720}
   RENDER_DEFAULT_CROSSFADE: ${RENDER_DEFAULT_CROSSFADE:-0}
+  # How long each ffmpeg call may run, and how many threads it may use (0 lets
+  # ffmpeg decide). They belong here and not only in app/symfony/.env: that file
+  # is the image's default, so setting these in the shell or the root .env did
+  # nothing at all - and the lease is derived from the two timeouts, so raising
+  # a timeout without raising it here also left the lease where it was.
+  FFMPEG_ANIMATE_TIMEOUT: ${FFMPEG_ANIMATE_TIMEOUT:-600}
+  FFMPEG_COMPOSE_TIMEOUT: ${FFMPEG_COMPOSE_TIMEOUT:-3600}
+  FFMPEG_THREADS: ${FFMPEG_THREADS:-0}
 
 services:
   nginx:

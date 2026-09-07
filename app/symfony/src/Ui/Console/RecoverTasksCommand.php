@@ -98,11 +98,13 @@ final class RecoverTasksCommand extends Command
 
         $io->writeln($report->requeuedTaskIds, OutputInterface::VERBOSITY_VERBOSE);
         $io->writeln($report->renotifiedTaskIds, OutputInterface::VERBOSITY_VERBOSE);
+        $io->writeln($report->releasedTaskIds, OutputInterface::VERBOSITY_VERBOSE);
         $io->success(\sprintf(
-            '%s %d tarea(s) y %d notificación(es).',
+            '%s %d tarea(s) y %d notificación(es); %d reserva(s) caducada(s) devuelta(s).',
             $report->dryRun ? 'Se reencolarían' : 'Reencoladas',
             $report->requeued(),
             $report->renotified(),
+            $report->released(),
         ));
 
         return Command::SUCCESS;

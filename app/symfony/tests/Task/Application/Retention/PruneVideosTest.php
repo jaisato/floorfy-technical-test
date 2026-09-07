@@ -167,6 +167,34 @@ final class PruneVideosTest extends TestCase
     }
 
     /**
+     * And what it freed is counted, in a real run and in a preview alike.
+     *
+     * `removeDirectory()` answers with what it could *not* delete, so every
+     * source it did delete added nothing to the report - and the dry run did
+     * not look at that directory at all. A run could therefore say "0 files, 0
+     * bytes" while deleting the originals of every image a task rendered from,
+     * which is the one number an operator reads a retention run for.
+     */
+    public function testTheScratchFilesAreCountedInTheReport(): void
+    {
+        $task = $this->settledTask('2026-01-01T00:00:00+00:00');
+        $work = $this->dir->file('work/images/'.$task->id()->value);
+        mkdir($work, 0o775, true);
+        file_put_contents($work.'/a.png', str_repeat('x', 120));
+        file_put_contents($work.'/b.png', str_repeat('x', 80));
+
+        $preview = $this->prune()->run($this->cutoff(), dryRun: true);
+
+        self::assertSame(2, $preview->files, 'the preview says what a real run would free');
+        self::assertSame(200, $preview->bytes);
+
+        $report = $this->prune()->run($this->cutoff());
+
+        self::assertSame(2, $report->files);
+        self::assertSame(200, $report->bytes);
+    }
+
+    /**
      * A scratch directory that will not go keeps the task in the listing.
      *
      * Every failure here used to be suppressed and the task marked pruned

@@ -379,6 +379,70 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         $this->forgetCachedCopy($id);
     }
 
+    public function releaseStaleClaims(DateTimeValue $leaseExpiredBefore, int $limit): array
+    {
+        $stale = $this->hydrate(
+            $this->em->createQueryBuilder()
+                ->select('t')
+                ->from(VideoTaskEntity::class, 't')
+                ->where('t.status = :processing')
+                ->andWhere('t.updatedAt < :before')
+                ->orderBy('t.updatedAt', 'ASC')
+                ->setParameter('processing', VideoTaskStatus::PROCESSING->value)
+                ->setParameter('before', $leaseExpiredBefore->toDateTimeImmutable())
+                ->setMaxResults($limit)
+                ->getQuery()
+                ->getResult(),
+        );
+
+        $released = [];
+
+        foreach ($stale as $task) {
+            // Conditional on the generation the listing read, like every other
+            // claim here: an attempt that came back to life and renewed its
+            // lease between the two statements keeps it, and this sweep leaves
+            // the row alone rather than pulling the task out from under it.
+            //
+            // updated_at is not touched. It is read as "how long has this sat
+            // untouched", which for an abandoned claim runs from the moment the
+            // worker died; leaving it is also what lets this same run see the
+            // task as unclaimed and publish it, instead of waiting a whole
+            // window for the next sweep.
+            $affected = $this->em->getConnection()->executeStatement(
+                <<<'SQL'
+                    UPDATE video_tasks
+                       SET status = :pending, run_generation = run_generation + 1
+                     WHERE id = :id
+                       AND status = :processing
+                       AND run_generation = :generation
+                       AND updated_at < :before
+                    SQL,
+                [
+                    'pending' => VideoTaskStatus::PENDING->value,
+                    'processing' => VideoTaskStatus::PROCESSING->value,
+                    'generation' => $task->runGeneration(),
+                    'before' => $leaseExpiredBefore->toDateTimeImmutable(),
+                    'id' => $task->id()->value,
+                ],
+                [
+                    'pending' => ParameterType::STRING,
+                    'processing' => ParameterType::STRING,
+                    'generation' => ParameterType::INTEGER,
+                    'before' => Types::DATETIME_IMMUTABLE,
+                    'id' => ParameterType::STRING,
+                ],
+            );
+
+            $this->forgetCachedCopy($task->id());
+
+            if (1 === $affected) {
+                $released[] = $task->id();
+            }
+        }
+
+        return $released;
+    }
+
     public function claimRepublication(UuidValue $id, DateTimeValue $before, DateTimeValue $now): bool
     {
         // Conditional, like every other claim here: two sweeps running at once

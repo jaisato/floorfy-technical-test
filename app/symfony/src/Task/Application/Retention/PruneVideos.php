@@ -176,7 +176,7 @@ final readonly class PruneVideos
         // therefore left those images on disk for good: listPrunable() skips a
         // pruned task and nothing else sweeps that directory. Attempted
         // whichever way the videos went, and what it cannot delete joins them.
-        $left = [...$left, ...self::removeDirectory($this->workDir.'/images/'.$id->value)];
+        $left = [...$left, ...self::removeDirectory($this->workDir.'/images/'.$id->value, $files, $bytes)];
 
         if ([] !== $left) {
             // Not marked as pruned, on purpose: pruned_at is what stops the
@@ -226,7 +226,38 @@ final readonly class PruneVideos
             }
         }
 
+        // The sources the run downloaded, which a real run deletes with the
+        // videos. Left out, a preview said "0 files, 0 bytes" for a task whose
+        // work directory held the originals of every image it rendered from -
+        // the one number an operator reads a dry run for.
+        self::measureDirectory($this->workDir.'/images/'.$task->id()->value, $files, $bytes);
+
         return new PrunedTask($task->id()->value, $files, $bytes);
+    }
+
+    /** What is under a directory, for a run that is only being asked. */
+    private static function measureDirectory(string $directory, int &$files, int &$bytes): void
+    {
+        if (!is_dir($directory)) {
+            return;
+        }
+
+        $entries = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS),
+        );
+
+        foreach ($entries as $entry) {
+            if (!$entry instanceof \SplFileInfo || $entry->isDir()) {
+                continue;
+            }
+
+            $size = @filesize($entry->getPathname());
+
+            if (false !== $size) {
+                ++$files;
+                $bytes += $size;
+            }
+        }
     }
 
     /**
@@ -355,7 +386,7 @@ final readonly class PruneVideos
      *
      * @return list<string> the paths it could not remove
      */
-    private static function removeDirectory(string $directory): array
+    private static function removeDirectory(string $directory, int &$files = 0, int &$bytes = 0): array
     {
         if (!is_dir($directory)) {
             return [];
@@ -374,9 +405,20 @@ final readonly class PruneVideos
             }
 
             $path = $entry->getPathname();
+            // Read before the unlink, which is the only moment it can be: the
+            // report counts what a run freed, and these are files as much as
+            // the videos are. Only what actually went is counted, so a
+            // directory nothing could be deleted from adds nothing.
+            $size = $entry->isDir() ? 0 : (int) (@filesize($path) ?: 0);
 
             if (!($entry->isDir() ? @rmdir($path) : @unlink($path))) {
                 $left[] = $path;
+                continue;
+            }
+
+            if (!$entry->isDir()) {
+                ++$files;
+                $bytes += $size;
             }
         }
 
