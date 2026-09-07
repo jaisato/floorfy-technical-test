@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace App\Ui\Http\Validation;
 
-use App\Task\Infrastructure\Media\BlockedUrl;
 use App\Task\Infrastructure\Media\PublicUrlGuard;
+use App\Task\Infrastructure\Media\UrlNotFetchable;
 use Symfony\Component\Validator\Constraint;
 use Symfony\Component\Validator\ConstraintValidator;
 use Symfony\Component\Validator\Exception\UnexpectedTypeException;
@@ -30,10 +30,15 @@ final class PublicHttpUrlValidator extends ConstraintValidator
 
         try {
             $this->guard->assertFetchable($value);
-        } catch (BlockedUrl $e) {
+        } catch (UrlNotFetchable $e) {
             // The guard's messages are written for the caller: they name the
             // scheme, port or address class that was refused, not the address
             // it resolved to being anything the caller did not already know.
+            //
+            // A host that would not resolve is refused here too, though the
+            // worker retries it. A submission is a conversation: the caller is
+            // there to be told, and can send it again, which is a better answer
+            // than accepting a task that is going to spend its retries and fail.
             $this->context->buildViolation($constraint->message)
                 ->setParameter('{{ reason }}', $e->getMessage())
                 ->addViolation();

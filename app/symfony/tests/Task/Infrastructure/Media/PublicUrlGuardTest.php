@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace App\Tests\Task\Infrastructure\Media;
 
+use App\Shared\Domain\Exception\PermanentFailure;
 use App\Task\Infrastructure\Media\BlockedUrl;
 use App\Task\Infrastructure\Media\PublicTargetPolicy;
 use App\Task\Infrastructure\Media\PublicUrlGuard;
+use App\Task\Infrastructure\Media\UnresolvableHost;
+use App\Task\Infrastructure\Media\UrlNotFetchable;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -159,13 +162,38 @@ final class PublicUrlGuardTest extends TestCase
     /**
      * A name nothing answers for cannot be checked, so it cannot be fetched.
      * .invalid is reserved by RFC 2606 precisely so that it never resolves.
+     *
+     * Not permanent, though, and that is the whole difference between this and
+     * every other refusal here: `dns_get_record()` answers a resolver that
+     * timed out exactly as it answers a name that does not exist, so the two
+     * are one case and the choice is which way to be wrong about it. Called
+     * permanent, a few seconds of resolver trouble failed every task whose
+     * image was being fetched during them, with no retry, and marked their
+     * callbacks abandoned so the recovery sweep would never offer them again.
      */
-    public function testAHostThatCannotBeResolvedIsRefused(): void
+    public function testAHostThatCannotBeResolvedIsRefusedButMayBeTriedAgain(): void
     {
-        $this->expectException(BlockedUrl::class);
-        $this->expectExceptionMessageMatches('/No se pudo resolver el host/');
+        try {
+            new PublicUrlGuard()->assertFetchable('https://nothing-answers-for-this.invalid/photo.jpg');
+            self::fail('a name that does not resolve cannot be fetched');
+        } catch (\Throwable $e) {
+            self::assertNotInstanceOf(PermanentFailure::class, $e, 'a resolver that was down is a moment, not a verdict');
+            self::assertInstanceOf(UrlNotFetchable::class, $e, 'and callers still catch it as one refusal');
+            self::assertInstanceOf(UnresolvableHost::class, $e);
+            self::assertMatchesRegularExpression('/No se pudo resolver el host/', $e->getMessage());
+        }
+    }
 
-        new PublicUrlGuard()->assertFetchable('https://nothing-answers-for-this.invalid/photo.jpg');
+    /** Everything the policy itself refuses is refused for good. */
+    public function testAPolicyRefusalIsPermanent(): void
+    {
+        try {
+            new PublicUrlGuard()->assertFetchable('http://10.0.0.1/photo.jpg');
+            self::fail('a private address must be refused');
+        } catch (\Throwable $e) {
+            self::assertInstanceOf(PermanentFailure::class, $e);
+            self::assertInstanceOf(BlockedUrl::class, $e);
+        }
     }
 
     public function testEveryReturnedAddressIsPublic(): void

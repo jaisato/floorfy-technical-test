@@ -53,6 +53,7 @@ final class SignedHttpCallbackDeliveryTest extends TestCase
             self::server()->url('/hook/record?id='.$id),
             '0195c6a0-1c37-7000-8000-000000000001',
             'completed',
+            7,
             $body,
         ));
 
@@ -62,17 +63,74 @@ final class SignedHttpCallbackDeliveryTest extends TestCase
         self::assertSame('application/json', $received['content_type']);
         self::assertSame('task.completed', $received['headers']['x-task-event']);
         self::assertSame('0195c6a0-1c37-7000-8000-000000000001', $received['headers']['x-task-id']);
+        self::assertSame('7', $received['headers']['x-task-run']);
 
-        // The receiver recomputes the HMAC over the exact bytes it got.
+        // The receiver recomputes the HMAC exactly as the README says: the
+        // three headers that say which notification this is, then the raw body.
+        $signed = implode("\n", [
+            $received['headers']['x-task-event'],
+            $received['headers']['x-task-id'],
+            $received['headers']['x-task-run'],
+            $received['body'],
+        ]);
+
         self::assertSame(
-            'sha256='.hash_hmac('sha256', $received['body'], self::SECRET),
+            'sha256='.hash_hmac('sha256', $signed, self::SECRET),
             $received['headers']['x-task-signature'],
         );
         self::assertSame($body, json_decode($received['body'], true, 512, \JSON_THROW_ON_ERROR));
     }
 
-    public function testTheSignatureIsTheHexHmacOfTheBody(): void
+    /**
+     * The announced event cannot be rewritten in transit.
+     *
+     * The body says how the task stands when the notification arrives, not when
+     * the event happened - a `task.failed` delivered after a retry has a body
+     * that says `pending` - so the event is the one field a receiver cannot
+     * reconstruct. Signed over the body alone, it was also the one field an
+     * on-path party could change for free on an allowed `http://` endpoint,
+     * turning a failure into a completion.
+     */
+    public function testTheSignatureCoversTheAnnouncedEventTheTaskAndTheRun(): void
     {
+        $id = $this->recordingId();
+
+        $this->delivery()->deliver(new CallbackRequest(
+            self::server()->url('/hook/record?id='.$id),
+            '0195c6a0-1c37-7000-8000-000000000001',
+            'failed',
+            3,
+            ['status' => 'pending'],
+        ));
+
+        $received = $this->recorded($id);
+        $signature = $received['headers']['x-task-signature'];
+
+        $verifies = static fn (string $event, string $taskId, string $run): bool => hash_equals(
+            SignedHttpCallbackDelivery::signature(
+                SignedHttpCallbackDelivery::signedPayload($event, $taskId, $run, $received['body']),
+                self::SECRET,
+            ),
+            $signature,
+        );
+
+        self::assertTrue($verifies('task.failed', '0195c6a0-1c37-7000-8000-000000000001', '3'), 'what was sent verifies');
+        self::assertFalse($verifies('task.completed', '0195c6a0-1c37-7000-8000-000000000001', '3'), 'a rewritten event does not');
+        self::assertFalse($verifies('task.failed', '0195c6a0-1c37-7000-8000-000000000002', '3'), 'nor a rewritten task');
+        self::assertFalse($verifies('task.failed', '0195c6a0-1c37-7000-8000-000000000001', '2'), 'nor a rewritten run');
+
+        // And the body alone is no longer enough to produce it: a receiver
+        // still verifying the old way rejects everything rather than accepting
+        // a notification whose metadata nobody vouched for.
+        self::assertNotSame('sha256='.hash_hmac('sha256', $received['body'], self::SECRET), $signature);
+    }
+
+    public function testTheSignatureIsTheHexHmacOfTheSignedPayload(): void
+    {
+        self::assertSame(
+            "task.completed\nabc\n1\n{\"a\":1}",
+            SignedHttpCallbackDelivery::signedPayload('task.completed', 'abc', '1', '{"a":1}'),
+        );
         self::assertSame(
             'sha256='.hash_hmac('sha256', '{"a":1}', 'k'),
             SignedHttpCallbackDelivery::signature('{"a":1}', 'k'),
@@ -87,7 +145,7 @@ final class SignedHttpCallbackDeliveryTest extends TestCase
     public function testAPrivateAddressIsRefusedWithoutARequest(): void
     {
         try {
-            $this->delivery()->deliver(new CallbackRequest('http://169.254.169.254/latest/meta-data/', 'x', 'completed', []));
+            $this->delivery()->deliver(new CallbackRequest('http://169.254.169.254/latest/meta-data/', 'x', 'completed', 1, []));
             self::fail('the metadata endpoint must be refused');
         } catch (CallbackDeliveryFailed $e) {
             self::assertTrue($e->isPermanent());
@@ -102,7 +160,7 @@ final class SignedHttpCallbackDeliveryTest extends TestCase
         $this->expectException(CallbackDeliveryFailed::class);
         $this->expectExceptionMessageMatches('/Puerto no permitido/');
 
-        $delivery->deliver(new CallbackRequest('http://8.8.8.8:8080/hook', 'x', 'completed', []));
+        $delivery->deliver(new CallbackRequest('http://8.8.8.8:8080/hook', 'x', 'completed', 1, []));
     }
 
     /** Sending unsigned would hand receivers something they cannot verify. */
@@ -112,7 +170,7 @@ final class SignedHttpCallbackDeliveryTest extends TestCase
         $delivery = new SignedHttpCallbackDelivery(HttpClient::create(), new PublicUrlGuard(new LoopbackTargetPolicy()), '', 5);
 
         try {
-            $delivery->deliver(new CallbackRequest(self::server()->url('/hook/record?id='.$id), 'x', 'completed', []));
+            $delivery->deliver(new CallbackRequest(self::server()->url('/hook/record?id='.$id), 'x', 'completed', 1, []));
             self::fail('an unsigned notification must not be sent');
         } catch (CallbackDeliveryFailed $e) {
             self::assertTrue($e->isPermanent());
@@ -124,7 +182,7 @@ final class SignedHttpCallbackDeliveryTest extends TestCase
     public function testAServerErrorIsAFailureWorthRetrying(): void
     {
         try {
-            $this->delivery()->deliver(new CallbackRequest(self::server()->url('/hook/fail'), 'x', 'failed', []));
+            $this->delivery()->deliver(new CallbackRequest(self::server()->url('/hook/fail'), 'x', 'failed', 1, []));
             self::fail('a 503 is not an acceptance');
         } catch (CallbackDeliveryFailed $e) {
             self::assertFalse($e->isPermanent());
@@ -136,7 +194,7 @@ final class SignedHttpCallbackDeliveryTest extends TestCase
     public function testARedirectIsNotFollowed(): void
     {
         try {
-            $this->delivery()->deliver(new CallbackRequest(self::server()->url('/hook/redirect'), 'x', 'failed', []));
+            $this->delivery()->deliver(new CallbackRequest(self::server()->url('/hook/redirect'), 'x', 'failed', 1, []));
             self::fail('a redirect must not count as delivered');
         } catch (CallbackDeliveryFailed $e) {
             self::assertStringContainsString('HTTP 307', $e->getMessage());
@@ -151,7 +209,7 @@ final class SignedHttpCallbackDeliveryTest extends TestCase
         $port = (int) parse_url(self::server()->baseUrl, \PHP_URL_PORT) + 1;
 
         try {
-            $this->delivery()->deliver(new CallbackRequest('http://127.0.0.1:'.$port.'/hook', 'x', 'canceled', []));
+            $this->delivery()->deliver(new CallbackRequest('http://127.0.0.1:'.$port.'/hook', 'x', 'canceled', 1, []));
             self::fail('a connection refused is not an acceptance');
         } catch (CallbackDeliveryFailed $e) {
             self::assertFalse($e->isPermanent());
@@ -164,7 +222,7 @@ final class SignedHttpCallbackDeliveryTest extends TestCase
         $started = microtime(true);
 
         try {
-            $this->delivery(1)->deliver(new CallbackRequest(self::server()->url('/hook/slow'), 'x', 'completed', []));
+            $this->delivery(1)->deliver(new CallbackRequest(self::server()->url('/hook/slow'), 'x', 'completed', 1, []));
             self::fail('a receiver slower than the timeout must not count as delivered');
         } catch (CallbackDeliveryFailed $e) {
             self::assertFalse($e->isPermanent());

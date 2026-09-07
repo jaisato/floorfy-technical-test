@@ -78,7 +78,7 @@ final readonly class PruneVideos
             // retention run after this one.
             $outcome = $dryRun
                 ? $this->measure($listed)
-                : $this->transaction->run(fn (): ?PrunedTask => $this->pruneLocked($listed->id()));
+                : $this->transaction->run(fn (): ?PrunedTask => $this->pruneLocked($listed->id(), $before));
 
             if (null === $outcome) {
                 continue;
@@ -112,13 +112,24 @@ final readonly class PruneVideos
      * Deletes one task's videos while holding its row, or reports that there
      * turned out to be nothing to delete.
      */
-    private function pruneLocked(UuidValue $id): ?PrunedTask
+    private function pruneLocked(UuidValue $id, DateTimeValue $before): ?PrunedTask
     {
         $task = $this->tasks->getForUpdate($id);
 
         if (null === $task || !$task->isPrunable()) {
-            // Retried since it was listed, or already pruned by a run that
-            // overlapped this one. Either way its files are not ours to delete.
+            // Already pruned by a run that overlapped this one, or put back to
+            // work and not settled. Either way its files are not ours to delete.
+            return null;
+        }
+
+        // The listing's cutoff, applied again: "settled and unpruned" is not
+        // the whole condition, and a task that got retried and finished between
+        // the listing and this lock satisfies it while being the newest task in
+        // the system. Its clips and its final video were minutes old and this
+        // deleted them, then wrote prunedAt over a task that had just produced
+        // them - which is exactly the race the lock was taken for, arriving
+        // through the half of the predicate that was not repeated inside it.
+        if ($task->updatedAt()->toDateTimeImmutable() >= $before->toDateTimeImmutable()) {
             return null;
         }
 

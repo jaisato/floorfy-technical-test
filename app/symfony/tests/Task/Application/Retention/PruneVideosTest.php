@@ -348,6 +348,40 @@ final class PruneVideosTest extends TestCase
     }
 
     /**
+     * And one that got retried *and finished again* in that gap, which the
+     * status alone cannot catch.
+     *
+     * "Settled and unpruned" is only half of the listing's condition; the other
+     * half is the cutoff, and it was not repeated under the lock. A task that
+     * came back and completed satisfies the half that was - so the newest video
+     * in the system, minutes old, was deleted as a leftover, and prunedAt was
+     * written over the task that had just produced it, taking it out of every
+     * run after this one.
+     */
+    public function testATaskThatFinishedAgainBetweenTheListingAndTheLockIsLeftAlone(): void
+    {
+        $task = $this->failedTask('2026-01-01T00:00:00+00:00');
+        $part = $this->partOf($task);
+        $final = $this->videoFile('final_'.$task->id()->value.'.mp4');
+        $clip = $this->videoFile('partial_'.$part->id()->value.'.mp4');
+
+        $this->tasks->beforeLockedRead = function () use ($task): void {
+            $now = $this->clock->now();
+            $task->retry($now);
+            $task->markProcessing($now);
+            $task->markCompleted('/videos/final_'.$task->id()->value.'.mp4', $now);
+        };
+
+        $report = $this->prune()->run($this->cutoff());
+
+        self::assertFileExists($final, 'the video the new run has just produced');
+        self::assertFileExists($clip, 'and the clip it was composed from');
+        self::assertSame([], $report->taskIds);
+        self::assertSame(0, $report->files);
+        self::assertNull($task->prunedAt(), 'nor is it excluded from the runs to come');
+    }
+
+    /**
      * The row lock and the deletion have to be the same transaction. Read the
      * task in one and unlink in another and the lock is released before the
      * first file goes, which is every bit as open as not locking at all.

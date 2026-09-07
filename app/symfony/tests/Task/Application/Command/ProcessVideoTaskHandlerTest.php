@@ -637,6 +637,52 @@ final class ProcessVideoTaskHandlerTest extends TestCase
         );
     }
 
+    /**
+     * Nor does a replaced attempt write its failures over the replacement's
+     * work.
+     *
+     * Publication was fenced by the run and the failure was not, so the half of
+     * the attempt that goes wrong was the half that could still reach the row.
+     * A download that fails after the task has been taken over marked the
+     * part failed on top of whatever the replacement had done with it - and if
+     * the replacement went on to finish, the API answered with a completed task
+     * carrying a part that reports an error and has no clip.
+     */
+    public function testAReplacedAttemptDoesNotRecordItsFailuresOverTheReplacement(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png']);
+        $this->images->failFor('https://example.com/a.png', new \RuntimeException('la descarga se cayó'));
+        $this->images->onFetch(function () use ($task): void {
+            // Taken over while this attempt was downloading; the failure below
+            // is this attempt's and belongs to nobody else's row.
+            $this->tasks->cancel($task->id(), $this->clock->now());
+            $task->retry($this->clock->now());
+            $this->tasks->save($task);
+            $this->tasks->claimForProcessing($task->id(), $this->clock->now(), $this->clock->now());
+        });
+
+        try {
+            $this->handle($task);
+            self::fail('the attempt itself did fail');
+        } catch (TaskProcessingFailed) {
+            // Which is true of this attempt and of nothing else.
+        }
+
+        self::assertSame(
+            ['pending'],
+            array_map(
+                static fn (PartialVideo $p): string => $p->status()->value,
+                $this->partials->listByTaskId($task->id()),
+            ),
+            "the replacement's part is left as it found it",
+        );
+        self::assertSame(
+            VideoTaskStatus::PROCESSING,
+            $this->tasks->currentStatus($task->id()),
+            'and the run that does hold the task is untouched',
+        );
+    }
+
     /** The composition is a boundary too: a task canceled after its last part is not finished. */
     public function testACancellationAfterTheLastPartStopsBeforeComposing(): void
     {

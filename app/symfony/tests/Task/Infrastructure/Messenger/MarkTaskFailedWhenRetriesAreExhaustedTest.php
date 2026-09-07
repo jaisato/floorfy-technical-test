@@ -75,6 +75,46 @@ final class MarkTaskFailedWhenRetriesAreExhaustedTest extends TestCase
         self::assertSame([], $this->bus->dispatched, 'and nobody is told it failed');
     }
 
+    /**
+     * An attempt that lost the claim on the way has nothing left to fail.
+     *
+     * The other half of the same problem: `release()` answers null when the
+     * claim was already gone - the task was canceled, or declared abandoned and
+     * taken over - and the attempt was then forgotten entirely, which reads
+     * from here exactly like a worker that died before claiming anything. That
+     * is the one case this listener answers by failing whatever is running, so
+     * the replaced attempt marked its own replacement failed, from a delivery
+     * that had already lost the argument.
+     */
+    public function testAnAttemptThatLostTheClaimDoesNotFailTheRunThatTookItOver(): void
+    {
+        $task = VideoTask::create(['images' => []], DateTimeValue::fromString('2026-01-02T03:04:05+00:00'), 'https://client.example/hook');
+        $this->tasks->save($task);
+
+        $claim = $this->tasks->claimForProcessing($task->id(), $this->clock->now(), $this->clock->now());
+        self::assertNotNull($claim);
+
+        // Canceled and queued again while that attempt was inside ffmpeg, so
+        // its release finds nothing of its own to hand back.
+        $this->tasks->cancel($task->id(), $this->clock->now());
+        $this->tasks->get($task->id())?->retry($this->clock->now());
+        $this->tasks->save($this->tasks->get($task->id()) ?? $task);
+
+        $this->attempt->released($task->id(), $this->tasks->release($task->id(), $claim, $this->clock->now()));
+
+        // The replacement, claimed before the exhausted delivery is reported.
+        self::assertNotNull($this->tasks->claimForProcessing($task->id(), $this->clock->now(), $this->clock->now()));
+
+        ($this->listener())($this->failure($task->id()->value, new \RuntimeException('boom')));
+
+        self::assertSame(
+            VideoTaskStatus::PROCESSING,
+            $this->tasks->currentStatus($task->id()),
+            'the replacement run is not the one that failed',
+        );
+        self::assertSame([], $this->bus->dispatched, 'and nobody is told it failed');
+    }
+
     /** The terminal status is the moment the client who asked is told. */
     public function testTheFailureIsNotifiedToTheTasksCallbackUrl(): void
     {

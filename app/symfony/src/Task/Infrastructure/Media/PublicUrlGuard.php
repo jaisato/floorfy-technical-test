@@ -26,7 +26,8 @@ final readonly class PublicUrlGuard
      * @return list<string> every validated address, in resolution order; the
      *                      caller must connect to one of these and to nothing else
      *
-     * @throws BlockedUrl
+     * @throws BlockedUrl       the URL is refused for what it is, every time
+     * @throws UnresolvableHost its name did not resolve just now
      */
     public function assertFetchable(string $url): array
     {
@@ -73,6 +74,9 @@ final readonly class PublicUrlGuard
      * both a public and a private record would otherwise slip through.
      *
      * @return list<string>
+     *
+     * @throws UnresolvableHost when nothing came back, which is a moment rather
+     *                          than a verdict - see that class
      */
     private function resolve(string $host): array
     {
@@ -108,7 +112,7 @@ final readonly class PublicUrlGuard
         }
 
         if ([] === $ips) {
-            throw BlockedUrl::unresolvable($host);
+            throw UnresolvableHost::host($host);
         }
 
         return $ips;
