@@ -8,6 +8,7 @@ use App\Shared\Application\Clock\Clock;
 use App\Shared\Domain\Exception\ClientSafe;
 use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Application\Callback\TaskCallbacks;
+use App\Task\Application\Command\AttemptInFlight;
 use App\Task\Application\Command\ProcessVideoTaskCommand;
 use App\Task\Domain\Port\VideoTaskRepository;
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
@@ -28,6 +29,7 @@ final readonly class MarkTaskFailedWhenRetriesAreExhausted
         private VideoTaskRepository $tasks,
         private Clock $clock,
         private TaskCallbacks $callbacks,
+        private AttemptInFlight $attempt,
     ) {
     }
 
@@ -56,7 +58,16 @@ final readonly class MarkTaskFailedWhenRetriesAreExhausted
         // back as failed: the DELETE had already answered success, and the
         // client was told the task was canceled and then that it failed, with
         // a callback for each. Whoever's UPDATE lands first decides.
-        $settled = $this->tasks->markFailedIfStillRunning($id, self::reason($event->getThrowable()), $this->clock->now());
+        $settled = $this->tasks->markFailedIfStillRunning(
+            $id,
+            self::reason($event->getThrowable()),
+            // The attempt whose message this is, as the handler recorded it
+            // when it handed the claim back. Null when no attempt can be named
+            // - the worker died, or the message never reached the handler - and
+            // then whatever is still running is what this failure is about.
+            $this->attempt->generationOf($id),
+            $this->clock->now(),
+        );
 
         if (null === $settled) {
             return;

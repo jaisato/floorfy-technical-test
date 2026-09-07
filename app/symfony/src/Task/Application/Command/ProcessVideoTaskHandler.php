@@ -14,6 +14,7 @@ use App\Task\Application\Callback\TaskCallbacks;
 use App\Task\Application\Url\VideoUrls;
 use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Entity\VideoTask;
+use App\Task\Domain\Enum\VideoTaskStatus;
 use App\Task\Domain\Exception\TaskCanceled;
 use App\Task\Domain\Exception\TaskProcessingFailed;
 use App\Task\Domain\Port\ImageAnimator;
@@ -64,6 +65,7 @@ final readonly class ProcessVideoTaskHandler
 
     public function __construct(
         private VideoTaskRepository $tasks,
+        private AttemptInFlight $attempt,
         private PartialVideoRepository $partials,
         private Clock $clock,
         private ImageFetcher $images,
@@ -93,6 +95,9 @@ final readonly class ProcessVideoTaskHandler
         }
 
         $now = $this->clock->now();
+
+        // Nothing of the previous delivery's is this one's.
+        $this->attempt->none();
 
         // The number the claim produced is this attempt's, and every write it
         // makes from here carries it back. A status cannot do that job: cancel
@@ -127,7 +132,13 @@ final readonly class ProcessVideoTaskHandler
             // Hand the claim back so the next delivery can take it. Without
             // this the task stays "processing" and every retry is refused by
             // the claim.
-            $this->tasks->release($task->id(), $generation, $this->clock->now());
+            //
+            // The generation it is handed back on is recorded, because the
+            // listener that marks the task failed once the retries are spent
+            // runs after this and cannot read it off the row: by then a
+            // duplicate delivery may have claimed the task, and failing that
+            // run marks a healthy attempt failed.
+            $this->attempt->released($task->id(), $this->tasks->release($task->id(), $generation, $this->clock->now()));
 
             throw $e;
         }
@@ -157,7 +168,7 @@ final readonly class ProcessVideoTaskHandler
         foreach ($partials as $partial) {
             // Between parts, not during one: a running ffmpeg is left to finish
             // its clip, which a retry then reuses.
-            $this->keepClaim($task, $generation);
+            $this->keepClaim($task->id(), $generation);
 
             $reused = $this->reusableFile($partial);
 
@@ -167,7 +178,11 @@ final readonly class ProcessVideoTaskHandler
             }
 
             try {
-                $clips[] = new Clip($this->renderPartial($task->id(), $partial, $options), $partial->renderOptions($options)->duration);
+                $clips[] = new Clip($this->renderPartial($task->id(), $partial, $options, $generation), $partial->renderOptions($options)->duration);
+            } catch (TaskCanceled $e) {
+                // Not this part failing: the attempt itself is over, and the
+                // parts after it are not this worker's to render.
+                throw $e;
             } catch (\Throwable $e) {
                 // One bad image must not cost the whole attempt: the rest of the
                 // parts are rendered anyway, so a retry only has the failures
@@ -197,7 +212,7 @@ final readonly class ProcessVideoTaskHandler
             throw $reason;
         }
 
-        $this->keepClaim($task, $generation);
+        $this->keepClaim($task->id(), $generation);
         $this->composeFinal($task, $clips, $options, $generation);
     }
 
@@ -238,27 +253,43 @@ final readonly class ProcessVideoTaskHandler
         return max($this->leaseSeconds, $longestStep + self::LEASE_SLACK_SECONDS);
     }
 
-    private function keepClaim(VideoTask $task, int $generation): void
+    private function keepClaim(UuidValue $taskId, int $generation): void
     {
-        if ($this->tasks->renewLease($task->id(), $generation, $this->clock->now())) {
+        if ($this->tasks->renewLease($taskId, $generation, $this->clock->now())) {
             return;
         }
 
-        $status = $this->tasks->currentStatus($task->id());
+        $status = $this->tasks->currentStatus($taskId);
 
         $this->logger->info('Claim lost, stopping the attempt', [
-            'task_id' => $task->id()->value,
+            'task_id' => $taskId->value,
             'status' => $status?->value,
         ]);
 
-        throw TaskCanceled::noticed($task->id()->value);
+        throw TaskCanceled::noticed($taskId->value);
+    }
+
+    /**
+     * The prefix everything this attempt writes outside the published names
+     * carries.
+     *
+     * A published file is addressed by the task or the part, and that name
+     * cannot move: clients follow it and the reuse check looks for it. What is
+     * on its way there can: two attempts of one task - the old one still
+     * inside ffmpeg, the replacement started by a cancel and a retry - staged
+     * into the same path and overwrote each other's work, and whichever
+     * finished second published or unlinked a file it had not produced.
+     */
+    private static function attemptPrefix(int $generation): string
+    {
+        return 'g'.$generation.'_';
     }
 
     /** @param list<Clip> $clips */
     private function composeFinal(VideoTask $task, array $clips, RenderOptions $options, int $generation): void
     {
         $name = 'final_'.$task->id()->value.'.mp4';
-        $staged = $this->stagingDir().'/'.$name;
+        $staged = $this->stagingDir().'/'.self::attemptPrefix($generation).$name;
 
         try {
             $this->composer->compose($clips, $staged, $options);
@@ -272,7 +303,14 @@ final readonly class ProcessVideoTaskHandler
             throw TaskProcessingFailed::compositionFailed();
         }
 
-        self::publish($staged, $this->videosDir.'/'.$name);
+        // Asked now the composition is over, which is the longest thing this
+        // attempt does: a cancellation plus a retry inside it hands the task to
+        // a replacement, and publishing without asking puts this attempt's file
+        // where the replacement's belongs. complete() below then refuses the
+        // row, so the other run would be left serving a video it did not make.
+        if ($this->mayPublish($task->id(), $generation, $staged)) {
+            self::publish($staged, $this->videosDir.'/'.$name);
+        }
 
         // The path, not a URL: the address a client is given is built when it
         // is asked for, so it follows the deployment and can carry a signature.
@@ -302,7 +340,7 @@ final readonly class ProcessVideoTaskHandler
     /**
      * Renders one part and returns the file the composer must read.
      */
-    private function renderPartial(UuidValue $taskId, PartialVideo $partial, RenderOptions $options): string
+    private function renderPartial(UuidValue $taskId, PartialVideo $partial, RenderOptions $options, int $generation): string
     {
         $this->logger->info('Processing partial', [
             'task_id' => $taskId->value,
@@ -317,10 +355,10 @@ final readonly class ProcessVideoTaskHandler
         }
 
         $name = 'partial_'.$partial->id()->value.'.mp4';
-        $staged = $this->stagingDir().'/'.$name;
+        $staged = $this->stagingDir().'/'.self::attemptPrefix($generation).$name;
         $published = $this->videosDir.'/'.$name;
 
-        $image = $this->images->fetch($partial->imageUrl(), $taskId->value.'/'.$partial->id()->value);
+        $image = $this->images->fetch($partial->imageUrl(), $taskId->value.'/'.self::attemptPrefix($generation).$partial->id()->value);
 
         try {
             $this->animator->animate($image, $partial->transition(), $staged, $partial->renderOptions($options));
@@ -336,12 +374,67 @@ final readonly class ProcessVideoTaskHandler
             @unlink($image);
         }
 
-        self::publish($staged, $published);
+        // Asked before the clip leaves the staging area. Rendering takes as
+        // long as ffmpeg takes, and a cancellation plus a retry in that window
+        // hand the task to a replacement attempt: publishing then puts this
+        // attempt's file where the replacement's belongs, and marks its part
+        // completed over work that is still running.
+        //
+        // When it says no, the path returned is one nothing reads: the next
+        // boundary check - or the one before the composition, for the last
+        // part - finds the claim gone and stops the attempt before the clips
+        // are used.
+        if ($this->mayPublish($taskId, $generation, $staged)) {
+            self::publish($staged, $published);
 
-        $partial->markCompleted(VideoUrls::PREFIX.$name, $this->clock->now());
-        $this->partials->save($partial);
+            $partial->markCompleted(VideoUrls::PREFIX.$name, $this->clock->now());
+            $this->partials->save($partial);
+        }
 
         return $published;
+    }
+
+    /**
+     * Proves the claim before a staged file is published, and takes the file
+     * away when it is gone.
+     *
+     * Left behind, that file is one nothing publishes and nothing reads: the
+     * retention job enumerates the published names only, so it would sit on
+     * the volume for as long as the deployment does.
+     */
+    private function mayPublish(UuidValue $taskId, int $generation, string $staged): bool
+    {
+        // Renewing is how ownership is asked: one write that answers whether
+        // the row is still this attempt's and pushes the deadline out. It also
+        // puts a renewal at the end of every long step, which is where the
+        // lease most needs one - a part or a composition can take the better
+        // part of an hour, and until now nothing touched the row in between.
+        if ($this->tasks->renewLease($taskId, $generation, $this->clock->now())) {
+            return true;
+        }
+
+        // Not this attempt's any more, and what to do depends on who has it. A
+        // cancellation leaves these names nobody's: the clip is worth keeping,
+        // because a retry reuses a part that is already rendered and the
+        // retention job clears it with the rest of the task if none comes. A
+        // *replacement attempt* is the other case - it owns these names now,
+        // and publishing over it puts this attempt's output where the other's
+        // belongs, or unlinks a file that is still being written.
+        if (VideoTaskStatus::PROCESSING !== $this->tasks->currentStatus($taskId)) {
+            return true;
+        }
+
+        // Nothing will ever publish or read the staged file now, and the
+        // retention job enumerates the published names only, so it would sit
+        // on the volume for as long as the deployment does.
+        @unlink($staged);
+
+        $this->logger->info('Another attempt holds the task; this one publishes nothing', [
+            'task_id' => $taskId->value,
+            'generation' => $generation,
+        ]);
+
+        return false;
     }
 
     /**
