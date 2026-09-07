@@ -278,7 +278,8 @@ Detalles que conviene conocer:
 ### `GET /api/tasks`
 
 Listado paginado, de la más reciente a la más antigua (`created_at` descendente,
-con el `id` como desempate, así que dos páginas nunca se solapan):
+con el `id` como desempate, así que el orden es total: una consulta nunca deja
+una tarea sin sitio ni la pone en dos):
 
 ```
 GET /api/tasks?status=failed&createdFrom=2026-01-01&createdTo=2026-01-31T23:59:59Z&page=2&limit=20
@@ -290,6 +291,15 @@ GET /api/tasks?status=failed&createdFrom=2026-01-01&createdTo=2026-01-31T23:59:5
 | `createdFrom`, `createdTo` | fecha ISO 8601 (una fecha sola es el inicio de ese día, en UTC); ambos límites inclusivos |
 | `page` | número de página, desde 1 |
 | `limit` | tamaño de página (20 por defecto, máximo 100; un valor mayor se recorta a 100) |
+
+Recorrer varias páginas es otra cosa. `page` cuenta filas desde el principio, y
+el principio de este orden es donde entran las tareas nuevas: una creada entre
+la página 1 y la página 2 desplaza todo lo demás una posición, de modo que el
+último elemento de la primera vuelve a salir en la segunda y otro se cae al
+final. Para un recorrido estable, fija el extremo con `createdTo` en la primera
+petición —el `created_at` del primer elemento sirve— y repítelo en las
+siguientes: nada creado después entra ya en el listado, y las páginas son las
+mismas de principio a fin.
 
 ```json
 {
