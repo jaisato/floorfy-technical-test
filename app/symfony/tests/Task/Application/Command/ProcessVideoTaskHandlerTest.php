@@ -6,6 +6,7 @@ namespace App\Tests\Task\Application\Command;
 
 use App\Task\Application\Callback\NotifyTaskCallback;
 use App\Task\Application\Callback\TaskCallbacks;
+use App\Task\Application\Command\AttemptInFlight;
 use App\Task\Application\Command\ProcessVideoTaskCommand;
 use App\Task\Application\Command\ProcessVideoTaskHandler;
 use App\Task\Domain\Entity\PartialVideo;
@@ -46,6 +47,7 @@ final class ProcessVideoTaskHandlerTest extends TestCase
     private const int EFFECTIVE_LEASE_SECONDS = self::COMPOSE_TIMEOUT_SECONDS + 300;
 
     private InMemoryVideoTaskRepository $tasks;
+    private AttemptInFlight $attempt;
     private InMemoryPartialVideoRepository $partials;
     private FakeImageFetcher $images;
     private FakeImageAnimator $animator;
@@ -61,6 +63,7 @@ final class ProcessVideoTaskHandlerTest extends TestCase
         mkdir($this->dir->file('work'), 0o777, true);
 
         $this->tasks = new InMemoryVideoTaskRepository();
+        $this->attempt = new AttemptInFlight();
         $this->partials = new InMemoryPartialVideoRepository();
         $this->images = new FakeImageFetcher($this->dir->file('work'));
         $this->animator = new FakeImageAnimator();
@@ -553,7 +556,10 @@ final class ProcessVideoTaskHandlerTest extends TestCase
     /**
      * A run has no fixed length, and the lease used to be counted from the
      * claim: a task with enough parts outlived it while making perfectly good
-     * progress, and a second worker took it over. Every boundary renews it.
+     * progress, and a second worker took it over. Every boundary renews it -
+     * and so does the moment each part and the composition finish, which is
+     * where a renewal matters most: those are the long steps, and until then
+     * nothing touched the row across one of them.
      */
     public function testTheClaimIsRenewedAsThePartsAreRendered(): void
     {
@@ -561,8 +567,9 @@ final class ProcessVideoTaskHandlerTest extends TestCase
 
         $this->handle($task);
 
-        // One per part plus one before composing.
-        self::assertSame(3, $this->tasks->leaseRenewals);
+        // Per part: one at the boundary before it, one when its clip is ready
+        // to publish. Then one before composing and one when the video is.
+        self::assertSame(6, $this->tasks->leaseRenewals);
     }
 
     /** Losing the claim to another worker stops the attempt as a cancellation does. */
@@ -581,6 +588,53 @@ final class ProcessVideoTaskHandlerTest extends TestCase
 
         self::assertSame(['https://example.com/a.png'], $this->images->fetched);
         self::assertSame([], $this->composer->calls);
+    }
+
+    /**
+     * A replacement attempt owns the names this one was about to write.
+     *
+     * Cancel the task and retry it while the old worker is inside ffmpeg, and
+     * the replacement puts the row back to `processing`. Publishing then lands
+     * this attempt's clip where the replacement's belongs and marks its part
+     * completed over work that is still running - so nothing is published, the
+     * staged file goes, and the attempt stops at the next boundary as it would
+     * for a cancellation.
+     */
+    public function testAnAttemptReplacedMidRenderPublishesNothing(): void
+    {
+        $task = $this->storedTask(['https://example.com/a.png', 'https://example.com/b.png']);
+        $this->images->onFetch(function (string $url) use ($task): void {
+            if ('https://example.com/a.png' !== $url) {
+                return;
+            }
+
+            // Canceled, queued again and claimed by somebody else, all while
+            // this attempt is rendering its first part. (The repository double
+            // applies the cancellation to the aggregate itself, as the row and
+            // the object are one thing in memory.)
+            $this->tasks->cancel($task->id(), $this->clock->now());
+            $task->retry($this->clock->now());
+            $this->tasks->save($task);
+            $this->tasks->claimForProcessing($task->id(), $this->clock->now(), $this->clock->now());
+        });
+
+        $this->handle($task);
+
+        self::assertSame(['https://example.com/a.png'], $this->images->fetched);
+        self::assertSame([], $this->composer->calls);
+        self::assertSame(
+            ['pending', 'pending'],
+            array_map(
+                static fn (PartialVideo $p): string => $p->status()->value,
+                $this->partials->listByTaskId($task->id()),
+            ),
+            "the replacement's part is left as it found it",
+        );
+        self::assertSame(
+            VideoTaskStatus::PROCESSING,
+            $this->tasks->currentStatus($task->id()),
+            'and the run that does hold the task is untouched',
+        );
     }
 
     /** The composition is a boundary too: a task canceled after its last part is not finished. */
@@ -672,6 +726,7 @@ final class ProcessVideoTaskHandlerTest extends TestCase
     {
         return new ProcessVideoTaskHandler(
             $this->tasks,
+            $this->attempt,
             $this->partials,
             $this->clock,
             $this->images,

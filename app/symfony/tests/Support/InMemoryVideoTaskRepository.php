@@ -127,22 +127,21 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         return $this->bump($id);
     }
 
-    public function release(UuidValue $id, int $generation, DateTimeValue $now): bool
+    public function release(UuidValue $id, int $generation, DateTimeValue $now): ?int
     {
         $task = $this->tasks[$id->value] ?? null;
 
         if (null === $task || VideoTaskStatus::PROCESSING !== $task->status() || $this->generation($id) !== $generation) {
-            return false;
+            return null;
         }
 
         $task->markPending($now);
-        $this->bump($id);
 
-        return true;
+        return $this->bump($id);
     }
 
     /** Mirrors the conditional write: nothing happens over a settled row. */
-    public function markFailedIfStillRunning(UuidValue $id, string $errorMessage, DateTimeValue $now): ?int
+    public function markFailedIfStillRunning(UuidValue $id, string $errorMessage, ?int $generation, DateTimeValue $now): ?int
     {
         if (null !== $this->beforeMarkFailed) {
             ($this->beforeMarkFailed)($id);
@@ -151,6 +150,11 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         $task = $this->tasks[$id->value] ?? null;
 
         if (null === $task || !\in_array($task->status(), [VideoTaskStatus::PENDING, VideoTaskStatus::PROCESSING], true)) {
+            return null;
+        }
+
+        // The attempt this failure belongs to, when the caller can name one.
+        if (null !== $generation && $this->generation($id) !== $generation) {
             return null;
         }
 

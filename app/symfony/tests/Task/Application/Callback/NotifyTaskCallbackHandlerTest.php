@@ -96,7 +96,7 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         // Retried and failed again while this notification was on the wire.
         $this->tasks->beforeMarkNotified = function () use ($task): void {
             $task->retry($this->now);
-            $this->tasks->markFailedIfStillRunning($task->id(), 'boom again', $this->now);
+            $this->tasks->markFailedIfStillRunning($task->id(), 'boom again', null, $this->now);
         };
 
         $this->handler()(new NotifyTaskCallback($task->id()->value, 'failed', VideoTask::FIRST_RUN));
@@ -225,7 +225,7 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
         // the same outcome, so only the generation says it is another run.
         $this->tasks->beforeMarkAbandoned = function () use ($task): void {
             $task->retry($this->now);
-            $this->tasks->markFailedIfStillRunning($task->id(), 'boom again', $this->now);
+            $this->tasks->markFailedIfStillRunning($task->id(), 'boom again', null, $this->now);
         };
 
         try {

@@ -7,6 +7,7 @@ namespace App\Tests\Task\Infrastructure\Messenger;
 use App\Shared\Domain\ValueObject\DateTimeValue;
 use App\Task\Application\Callback\NotifyTaskCallback;
 use App\Task\Application\Callback\TaskCallbacks;
+use App\Task\Application\Command\AttemptInFlight;
 use App\Task\Application\Command\ProcessVideoTaskCommand;
 use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\Enum\VideoTaskStatus;
@@ -31,12 +32,47 @@ final class MarkTaskFailedWhenRetriesAreExhaustedTest extends TestCase
     private InMemoryVideoTaskRepository $tasks;
     private FixedClock $clock;
     private RecordingMessageBus $bus;
+    private AttemptInFlight $attempt;
 
     protected function setUp(): void
     {
         $this->tasks = new InMemoryVideoTaskRepository();
         $this->clock = new FixedClock();
         $this->bus = new RecordingMessageBus();
+        $this->attempt = new AttemptInFlight();
+    }
+
+    /**
+     * The failure belongs to the attempt that exhausted, not to whatever is
+     * running when it is reported.
+     *
+     * This listener runs after the handler has handed the claim back, and a
+     * duplicate delivery can claim the task in between: a status-only
+     * transition then wrote "failed" over a healthy run that had only just
+     * started, with a callback to match. The handler records the generation it
+     * released on, and the write is conditional on it.
+     */
+    public function testAFailureDoesNotOvertakeAnAttemptThatClaimedTheTaskAfterIt(): void
+    {
+        $task = VideoTask::create(['images' => []], DateTimeValue::fromString('2026-01-02T03:04:05+00:00'));
+        $this->tasks->save($task);
+
+        // What the failing handler left behind: claimed, then released.
+        $claim = $this->tasks->claimForProcessing($task->id(), $this->clock->now(), $this->clock->now());
+        self::assertNotNull($claim);
+        $this->attempt->released($task->id(), $this->tasks->release($task->id(), $claim, $this->clock->now()));
+
+        // And the delivery that got there first, in the moment in between.
+        self::assertNotNull($this->tasks->claimForProcessing($task->id(), $this->clock->now(), $this->clock->now()));
+
+        ($this->listener())($this->failure($task->id()->value, new \RuntimeException('boom')));
+
+        self::assertSame(
+            VideoTaskStatus::PROCESSING,
+            $this->tasks->currentStatus($task->id()),
+            'the run under way is not the one that failed',
+        );
+        self::assertSame([], $this->bus->dispatched, 'and nobody is told it failed');
     }
 
     /** The terminal status is the moment the client who asked is told. */
@@ -224,6 +260,6 @@ final class MarkTaskFailedWhenRetriesAreExhaustedTest extends TestCase
 
     private function listener(): MarkTaskFailedWhenRetriesAreExhausted
     {
-        return new MarkTaskFailedWhenRetriesAreExhausted($this->tasks, $this->clock, new TaskCallbacks($this->bus));
+        return new MarkTaskFailedWhenRetriesAreExhausted($this->tasks, $this->clock, new TaskCallbacks($this->bus), $this->attempt);
     }
 }

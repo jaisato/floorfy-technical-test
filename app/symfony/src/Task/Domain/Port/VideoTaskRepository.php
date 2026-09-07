@@ -58,10 +58,12 @@ interface VideoTaskRepository
      *
      * @param int $generation the number claimForProcessing() returned
      *
-     * @return bool true when a claim was actually released; false when this
-     *              attempt no longer holds it and has nothing to hand back
+     * @return int|null the generation the task now carries, which is what a
+     *                  failure reported after this release is about; null when
+     *                  this attempt no longer holds the claim and has nothing
+     *                  to hand back
      */
-    public function release(UuidValue $id, int $generation, DateTimeValue $now): bool;
+    public function release(UuidValue $id, int $generation, DateTimeValue $now): ?int;
 
     /**
      * Says "still working on it" and pushes the claim's deadline forward.
@@ -261,11 +263,24 @@ interface VideoTaskRepository
      * the DELETE had already answered success, the row said failed, and the
      * client was told both. Whoever's UPDATE lands first decides.
      *
+     * @param int|null $generation the attempt this failure belongs to, as
+     *                             release() reported it. The row must still be
+     *                             on that generation: the failure is reported
+     *                             after the handler has handed the claim back,
+     *                             and a duplicate delivery can have claimed the
+     *                             task in between - failing whatever is running
+     *                             then fails a healthy run. Null when no
+     *                             attempt can be named (the worker died, or the
+     *                             message never reached the handler), where
+     *                             failing what is still running is the recovery
+     *                             this exists for.
+     *
      * @return int|null the generation the failed task now carries, which is
      *                  what its notification is recorded against; null when the
-     *                  row was no longer pending or processing
+     *                  row was no longer pending or processing, or no longer
+     *                  the attempt named
      */
-    public function markFailedIfStillRunning(UuidValue $id, string $errorMessage, DateTimeValue $now): ?int;
+    public function markFailedIfStillRunning(UuidValue $id, string $errorMessage, ?int $generation, DateTimeValue $now): ?int;
 
     /**
      * The status the row has right now, read from the database rather than

@@ -216,7 +216,7 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
         $claim = $this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore());
 
         self::assertNotNull($claim);
-        self::assertTrue($this->repository->release($task->id(), $claim, $this->now));
+        self::assertNotNull($this->repository->release($task->id(), $claim, $this->now));
         self::assertNotNull($this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore()));
     }
 
@@ -224,7 +224,7 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
     {
         $task = $this->storedTask();
 
-        self::assertFalse($this->repository->release($task->id(), VideoTask::FIRST_RUN, $this->now));
+        self::assertNull($this->repository->release($task->id(), VideoTask::FIRST_RUN, $this->now));
     }
 
     /**
@@ -253,7 +253,7 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
         self::assertNotSame($first, $second, 'a claim is a number, and each one is its own');
 
         self::assertFalse($this->repository->renewLease($task->id(), $first, $this->now));
-        self::assertFalse($this->repository->release($task->id(), $first, $this->now));
+        self::assertNull($this->repository->release($task->id(), $first, $this->now));
         self::assertNull($this->repository->complete($task->id(), '/videos/final.mp4', $first, $this->now));
 
         self::assertSame(

@@ -138,7 +138,7 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         );
     }
 
-    public function release(UuidValue $id, int $generation, DateTimeValue $now): bool
+    public function release(UuidValue $id, int $generation, DateTimeValue $now): ?int
     {
         $affected = $this->em->getConnection()->executeStatement(
             <<<'SQL'
@@ -165,12 +165,12 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         );
 
         if ($affected < 1) {
-            return false;
+            return null;
         }
 
         $this->forgetCachedCopy($id);
 
-        return true;
+        return $generation + 1;
     }
 
     public function renewLease(UuidValue $id, int $generation, DateTimeValue $now): bool
@@ -452,8 +452,18 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         return 1 === $affected;
     }
 
-    public function markFailedIfStillRunning(UuidValue $id, string $errorMessage, DateTimeValue $now): ?int
+    public function markFailedIfStillRunning(UuidValue $id, string $errorMessage, ?int $generation, DateTimeValue $now): ?int
     {
+        // With a generation the failure is that attempt's: the row must still
+        // be the one it handed back, so a duplicate delivery that claimed the
+        // task in between is not the run this failure is about. Without one -
+        // the worker died before it claimed anything, or before it ran at all -
+        // there is no attempt to name, and failing whatever is still running is
+        // the recovery this listener exists for.
+        if (null !== $generation) {
+            return $this->transitionFrom($id, $generation, $errorMessage, $now);
+        }
+
         return $this->transitionWithGeneration(
             $id,
             <<<'SQL'
@@ -478,6 +488,48 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
                 'now' => Types::DATETIME_IMMUTABLE,
             ],
         );
+    }
+
+    /** The same terminal failure, but only over the generation the caller names. */
+    private function transitionFrom(UuidValue $id, int $generation, string $errorMessage, DateTimeValue $now): ?int
+    {
+        $affected = $this->em->getConnection()->executeStatement(
+            <<<'SQL'
+                UPDATE video_tasks
+                   SET status = :failed, error_message = :error, updated_at = :now, run_generation = :next
+                 WHERE id = :id
+                   AND run_generation = :generation
+                   AND (status = :pending OR status = :processing)
+                SQL,
+            [
+                'failed' => VideoTaskStatus::FAILED->value,
+                'error' => $errorMessage,
+                'pending' => VideoTaskStatus::PENDING->value,
+                'processing' => VideoTaskStatus::PROCESSING->value,
+                'generation' => $generation,
+                'next' => $generation + 1,
+                'now' => $now->toDateTimeImmutable(),
+                'id' => $id->value,
+            ],
+            [
+                'failed' => ParameterType::STRING,
+                'error' => ParameterType::STRING,
+                'pending' => ParameterType::STRING,
+                'processing' => ParameterType::STRING,
+                'generation' => ParameterType::INTEGER,
+                'next' => ParameterType::INTEGER,
+                'now' => Types::DATETIME_IMMUTABLE,
+                'id' => ParameterType::STRING,
+            ],
+        );
+
+        if ($affected < 1) {
+            return null;
+        }
+
+        $this->forgetCachedCopy($id);
+
+        return $generation + 1;
     }
 
     public function cancel(UuidValue $id, DateTimeValue $now): ?int
