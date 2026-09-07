@@ -266,6 +266,30 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
         self::assertNotNull($this->repository->complete($task->id(), '/videos/final.mp4', $second, $this->now));
     }
 
+    /**
+     * Two renewals on one clock, which is what a part that finishes inside a
+     * second - or is reused whole from an earlier run - produces.
+     *
+     * `updated_at` is a DATETIME, so the second renewal writes the value the
+     * column already holds. MySQL's affected-row count is rows *changed*, not
+     * rows matched, so it reported zero and the attempt read that as having
+     * lost its claim: a healthy run abandoned mid-way, and the message
+     * acknowledged as if the task had been canceled. SQLite counts matched
+     * rows, which is why the test profile never saw it and the MySQL job did.
+     */
+    public function testRenewingTwiceOnTheSameClockKeepsTheClaim(): void
+    {
+        $task = $this->storedTask();
+        $claim = $this->repository->claimForProcessing($task->id(), $this->now, $this->staleBefore());
+
+        self::assertNotNull($claim);
+        self::assertTrue($this->repository->renewLease($task->id(), $claim, $this->now));
+        self::assertTrue(
+            $this->repository->renewLease($task->id(), $claim, $this->now),
+            'the deadline is already where this would put it; the claim is still held',
+        );
+    }
+
     public function testCancelingWritesTheStatusOverAPendingOrProcessingTask(): void
     {
         $pending = $this->storedTask();
