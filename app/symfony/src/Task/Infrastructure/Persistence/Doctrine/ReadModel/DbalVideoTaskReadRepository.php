@@ -83,9 +83,18 @@ final readonly class DbalVideoTaskReadRepository implements VideoTaskReadReposit
         $query = $this->filtered($listing)
             ->select('t.id', 't.status', 't.final_video_url', 't.error_message', 't.callback_url', 't.created_at', 't.updated_at', 't.pruned_at')
             // Newest first, and the id - time-ordered, being a UUID v7 - breaks
-            // ties among tasks created in the same second, so two pages never
-            // overlap. Both descending, so the (created_at, id) index is read
-            // backwards rather than sorted.
+            // ties among tasks created in the same second, so the order is
+            // total: no row is left without a place and none has two. Both
+            // descending, so the (created_at, id) index is read backwards
+            // rather than sorted.
+            //
+            // That is one query. Across pages, `page` counts rows from the
+            // start of this order, and the start of it is where new tasks
+            // arrive: one created between page 1 and page 2 pushes everything
+            // down a place, so the last row of the first page comes back on the
+            // second and another falls off the end. A traversal that must not
+            // shift pins `createdTo` on the first request and repeats it -
+            // nothing created after that enters the listing at all.
             ->orderBy('t.created_at', 'DESC')
             ->addOrderBy('t.id', 'DESC')
             ->setFirstResult($listing->offset())
