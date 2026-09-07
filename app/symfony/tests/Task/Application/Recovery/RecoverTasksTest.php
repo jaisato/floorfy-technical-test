@@ -93,9 +93,48 @@ final class RecoverTasksTest extends TestCase
     public function testATaskAlreadyBeingProcessedIsNotDisturbed(): void
     {
         $task = $this->pendingTask('2026-03-01T09:00:00+00:00');
+        // Inside the lease: a worker is very probably still rendering it, and
+        // taking the claim would restart work that is being done.
+        $task->markProcessing(DateTimeValue::fromString('2026-03-01T09:59:00+00:00'));
+
+        $report = $this->recover()->run($this->cutoff());
+
+        self::assertSame([], $report->requeuedTaskIds);
+        self::assertSame([], $report->releasedTaskIds);
+        self::assertSame([], $this->bus->dispatched);
+    }
+
+    /**
+     * And a claim whose worker is not coming back is handed straight back.
+     *
+     * A worker killed mid-render leaves the task at "processing" with a lease
+     * that is still fresh, and the broker redelivers its message at once: the
+     * next worker's claim is refused for exactly that reason, refusing reads as
+     * "somebody else has it", and the delivery is acknowledged - so the only
+     * message pointing at the task is gone before the lease has even expired.
+     * The sweep looked for tasks at "pending", so nothing was left to notice
+     * when it did expire, and the task sat at "processing" for good.
+     */
+    public function testAClaimWhoseLeaseExpiredIsReleasedAndPublishedAgain(): void
+    {
+        $task = $this->pendingTask('2026-03-01T09:00:00+00:00');
         $task->markProcessing(DateTimeValue::fromString('2026-03-01T09:00:00+00:00'));
 
-        self::assertSame([], $this->recover()->run($this->cutoff())->requeuedTaskIds);
+        $report = $this->recover()->run($this->cutoff());
+
+        self::assertSame([$task->id()->value], $report->releasedTaskIds);
+        self::assertSame([$task->id()->value], $report->requeuedTaskIds, 'and the same run publishes it');
+        self::assertEquals([new ProcessVideoTaskCommand($task->id()->value)], $this->bus->dispatched);
+    }
+
+    /** A dry run reports what a real one would do, and takes no claim back. */
+    public function testADryRunReleasesNothing(): void
+    {
+        $task = $this->pendingTask('2026-03-01T09:00:00+00:00');
+        $task->markProcessing(DateTimeValue::fromString('2026-03-01T09:00:00+00:00'));
+
+        self::assertSame([], $this->recover()->run($this->cutoff(), dryRun: true)->releasedTaskIds);
+        self::assertSame([$task->id()->value], $this->recover()->run($this->cutoff())->releasedTaskIds);
     }
 
     public function testASettledTaskWhoseCallbackWasNeverDeliveredIsQueuedAgain(): void

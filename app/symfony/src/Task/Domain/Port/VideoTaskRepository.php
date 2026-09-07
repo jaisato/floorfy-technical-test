@@ -138,6 +138,31 @@ interface VideoTaskRepository
     public function claimRepublication(UuidValue $id, DateTimeValue $before, DateTimeValue $now): bool;
 
     /**
+     * Hands back the claims of workers that are not coming back.
+     *
+     * A worker killed mid-render leaves its task at "processing" with a lease
+     * that is still fresh, and the broker redelivers its message at once: the
+     * next worker's claim is refused for exactly that reason, and refusing is
+     * read as "somebody else has it", so the delivery is acknowledged and the
+     * only message pointing at the task is gone. The lease then expires with
+     * nothing left to notice - the sweep looks for tasks at "pending" - and the
+     * task sits at "processing" for good.
+     *
+     * So a claim older than the lease is released here, back to "pending" and
+     * on a new generation, which is what stops the dead attempt from writing
+     * anything if it ever wakes up. `updatedAt` is deliberately left where it
+     * was: it says how long the task has sat untouched, which is measured from
+     * when the worker died and not from when the sweep noticed, and it is what
+     * lets the same run pick the task up and publish it again.
+     *
+     * @param DateTimeValue $leaseExpiredBefore claims untouched since this are gone
+     * @param positive-int  $limit
+     *
+     * @return list<UuidValue> the tasks released, for the report
+     */
+    public function releaseStaleClaims(DateTimeValue $leaseExpiredBefore, int $limit): array;
+
+    /**
      * Settled tasks that asked for a callback and never got one, untouched
      * since the cutoff: the same lost-publish problem, at the other end.
      *

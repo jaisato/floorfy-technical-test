@@ -12,11 +12,13 @@ final readonly class RecoveryReport
     /**
      * @param list<string> $requeuedTaskIds   tasks left at "pending" whose processing message was published again
      * @param list<string> $renotifiedTaskIds settled tasks whose callback was published again
+     * @param list<string> $releasedTaskIds   claims of workers that never came back, handed back to "pending"
      */
     public function __construct(
         public array $requeuedTaskIds,
         public array $renotifiedTaskIds,
         public bool $dryRun,
+        public array $releasedTaskIds = [],
     ) {
     }
 
@@ -30,8 +32,13 @@ final readonly class RecoveryReport
         return \count($this->renotifiedTaskIds);
     }
 
+    public function released(): int
+    {
+        return \count($this->releasedTaskIds);
+    }
+
     public function isEmpty(): bool
     {
-        return [] === $this->requeuedTaskIds && [] === $this->renotifiedTaskIds;
+        return [] === $this->requeuedTaskIds && [] === $this->renotifiedTaskIds && [] === $this->releasedTaskIds;
     }
 }

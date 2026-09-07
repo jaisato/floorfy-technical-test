@@ -10,6 +10,7 @@ use App\Shared\Domain\ValueObject\DateTimeValue;
 use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Application\Callback\NotifyTaskCallback;
 use App\Task\Application\Command\ProcessVideoTaskCommand;
+use App\Task\Application\Command\TaskLease;
 use App\Task\Domain\Port\VideoTaskRepository;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -46,6 +47,12 @@ final readonly class RecoverTasks
         private Clock $clock,
         #[Autowire(service: 'monolog.logger.task')]
         private LoggerInterface $logger,
+        #[Autowire(param: 'app.task_lease_seconds')]
+        private int $leaseSeconds = 0,
+        #[Autowire(param: 'app.ffmpeg_animate_timeout')]
+        private int $animateTimeoutSeconds = 0,
+        #[Autowire(param: 'app.ffmpeg_compose_timeout')]
+        private int $composeTimeoutSeconds = 0,
     ) {
     }
 
@@ -57,6 +64,26 @@ final readonly class RecoverTasks
     {
         $requeued = [];
         $renotified = [];
+
+        // First, because it is what makes the loop below able to see them. A
+        // worker killed mid-render leaves its task at "processing" with a fresh
+        // lease, and the broker redelivers its message at once: the next
+        // worker's claim is refused for exactly that reason, refusing reads as
+        // "somebody else has it", and the delivery is acknowledged - so the
+        // only message pointing at the task is gone before the lease has even
+        // expired, and nothing was left to notice when it did.
+        //
+        // The cutoff is the lease, not this sweep's window: a claim younger
+        // than the lease belongs to a worker that is very probably still
+        // rendering, and taking it would restart work that is being done.
+        $released = $dryRun ? [] : $this->tasks->releaseStaleClaims(
+            $this->clock->now()->minusSeconds(TaskLease::seconds(
+                $this->leaseSeconds,
+                $this->animateTimeoutSeconds,
+                $this->composeTimeoutSeconds,
+            )),
+            $limit,
+        );
 
         foreach ($this->tasks->listUnclaimedSince($before, $limit) as $task) {
             // Claimed before publishing, exactly as the callback below is. A
@@ -100,15 +127,19 @@ final readonly class RecoverTasks
             $renotified[] = $task->id()->value;
         }
 
-        if ([] !== $requeued || [] !== $renotified) {
+        if ([] !== $requeued || [] !== $renotified || [] !== $released) {
             $this->logger->warning($dryRun ? 'Recovery run (dry run)' : 'Recovery run', [
                 'requeued' => \count($requeued),
                 'renotified' => \count($renotified),
+                'released' => \count($released),
                 'before' => $before->toIso8601(),
             ]);
         }
 
-        return new RecoveryReport($requeued, $renotified, $dryRun);
+        return new RecoveryReport($requeued, $renotified, $dryRun, array_map(
+            static fn (UuidValue $id): string => $id->value,
+            $released,
+        ));
     }
 
     /**

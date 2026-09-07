@@ -176,6 +176,27 @@ final class DbalVideoTaskReadRepositoryTest extends DatabaseTestCase
         self::assertSame([$old->id()->value], self::ids($to->items));
     }
 
+    /**
+     * A lower bound with a fraction starts at the next second the column holds.
+     *
+     * `created_at` keeps no fractional part, and a bound is bound to the second
+     * by dropping one: `…T10:00:00.500000Z` went in as `10:00:00` and matched a
+     * task created at `10:00:00`, which is *before* the instant asked for. The
+     * upper bound keeps its truncation on purpose - moving an inclusive `<=`
+     * down keeps a row the caller may not have meant, rather than hiding one
+     * they did.
+     */
+    public function testAFractionalLowerBoundDoesNotReachBackIntoTheSecondBeforeIt(): void
+    {
+        $onTheSecond = $this->storedTask('2026-01-02T10:00:00Z');
+        $next = $this->storedTask('2026-01-02T10:00:01Z');
+
+        $page = $this->listing->list(new TaskListing(createdFrom: DateTimeValue::fromString('2026-01-02T10:00:00.5Z')));
+
+        self::assertSame([$next->id()->value], self::ids($page->items));
+        self::assertNotContains($onTheSecond->id()->value, self::ids($page->items));
+    }
+
     /** A range given in another zone selects the same instants as its UTC equivalent. */
     public function testTheRangeIsComparedAsInstants(): void
     {

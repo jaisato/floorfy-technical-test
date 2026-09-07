@@ -114,7 +114,7 @@ final readonly class DbalVideoTaskReadRepository implements VideoTaskReadReposit
 
         if (null !== $listing->createdFrom) {
             $query->andWhere('t.created_at >= :created_from')
-                ->setParameter('created_from', $listing->createdFrom->toDateTimeImmutable(), Types::DATETIME_IMMUTABLE);
+                ->setParameter('created_from', self::wholeSecondAtOrAfter($listing->createdFrom), Types::DATETIME_IMMUTABLE);
         }
 
         if (null !== $listing->createdTo) {
@@ -123,6 +123,33 @@ final readonly class DbalVideoTaskReadRepository implements VideoTaskReadReposit
         }
 
         return $query;
+    }
+
+    /**
+     * A lower bound at the precision the column keeps, rounded the safe way.
+     *
+     * `created_at` is a DATETIME with no fractional part, and Doctrine formats
+     * a bound to the second by dropping one - so `?created_from=…T12:00:00.5Z`
+     * was bound as `12:00:00` and matched tasks created *before* the instant
+     * the caller asked for. Rounded up instead, the range starts at the first
+     * second the column can hold that is not before the bound.
+     *
+     * The upper bound is left as it is on purpose: dropping its fraction moves
+     * it down to a second the column holds, which is the direction an inclusive
+     * `<=` can afford - it keeps a row the caller may not have meant, rather
+     * than hiding one they did.
+     */
+    private static function wholeSecondAtOrAfter(DateTimeValue $bound): \DateTimeImmutable
+    {
+        $at = $bound->toDateTimeImmutable();
+
+        if ('0' === $at->format('u') || 0 === (int) $at->format('u')) {
+            return $at;
+        }
+
+        return $at
+            ->setTime((int) $at->format('G'), (int) $at->format('i'), (int) $at->format('s'))
+            ->add(new \DateInterval('PT1S'));
     }
 
     /**

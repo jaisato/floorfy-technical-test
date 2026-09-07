@@ -361,6 +361,29 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         );
     }
 
+    public function releaseStaleClaims(DateTimeValue $leaseExpiredBefore, int $limit): array
+    {
+        $released = [];
+
+        foreach ($this->oldestFirst(
+            static fn (VideoTask $task): bool => VideoTaskStatus::PROCESSING === $task->status(),
+            $leaseExpiredBefore,
+            $limit,
+        ) as $task) {
+            $stored = $this->tasks[$task->id()->value];
+
+            // markPending() with the time it already had: what the sweep hands
+            // back is the claim, and `updatedAt` still says how long the task
+            // has sat untouched - which is what lets the same run publish it.
+            $stored->markPending($stored->updatedAt());
+            $this->bump($task->id());
+
+            $released[] = $task->id();
+        }
+
+        return $released;
+    }
+
     public function listAwaitingCallback(DateTimeValue $before, int $limit): array
     {
         return $this->oldestFirst(
