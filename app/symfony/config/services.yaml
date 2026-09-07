@@ -148,6 +148,18 @@ services:
             $checkName: 'callbacks_transport'
             $transport: '@messenger.transport.callbacks'
 
+    # And the one nothing publishes to on purpose. A message that has spent its
+    # retries is parked there instead of being dropped, so a bad
+    # MESSENGER_FAILURE_TRANSPORT_DSN loses exactly the messages somebody was
+    # going to want to look at - silently, while the two transports above are
+    # reachable and the deployment is advertised as ready.
+    app.health_check.failure_transport:
+        class: App\Shared\Infrastructure\Health\TransportCheck
+        tags: ['app.health_check']
+        arguments:
+            $checkName: 'failure_transport'
+            $transport: '@messenger.transport.failed'
+
     # ffmpeg budgets. One invocation per part, then one for the concatenation.
     App\Task\Infrastructure\Video\FfmpegImageAnimator:
         arguments:

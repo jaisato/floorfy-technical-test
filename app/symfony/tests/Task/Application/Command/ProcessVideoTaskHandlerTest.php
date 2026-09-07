@@ -525,12 +525,16 @@ final class ProcessVideoTaskHandlerTest extends TestCase
         self::assertSame(VideoTaskStatus::CANCELED, $task->status());
         self::assertNull($task->finalVideoUrl());
 
-        // The part that was in flight finished and is kept for a later retry.
+        // And the part that was in flight is not kept. It could only be kept by
+        // publishing it under the name every run of this task shares, and by
+        // then the attempt no longer holds the row: a retry claiming it between
+        // the check and the rename would have this clip land where its own
+        // belongs. A retry re-renders that one part instead.
         $statuses = array_map(
             static fn (PartialVideo $p): string => $p->status()->value,
             $this->partials->listByTaskId($task->id()),
         );
-        self::assertSame(['completed', 'pending', 'pending'], $statuses);
+        self::assertSame(['pending', 'pending', 'pending'], $statuses);
     }
 
     /**

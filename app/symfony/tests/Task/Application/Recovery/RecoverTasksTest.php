@@ -108,6 +108,33 @@ final class RecoverTasksTest extends TestCase
         self::assertEquals([new NotifyTaskCallback($task->id()->value, 'completed', $task->runGeneration())], $this->bus->dispatched);
     }
 
+    /**
+     * The two kinds are recovered on separately configured transports, and one
+     * being unreachable says nothing about the other.
+     *
+     * Thrown out of the loop, the first task whose publish failed ended the run
+     * before the callbacks were even looked at - and a stale pending task stays
+     * stale until it is republished, so healthy notifications went unrecovered
+     * for as long as the fault lasted, which is exactly when they are most
+     * likely to be owed.
+     */
+    public function testAFailedTaskPublishStillLetsTheCallbacksBeRecovered(): void
+    {
+        $this->pendingTask('2026-03-01T09:00:00+00:00');
+        $owed = $this->settledTask('2026-03-01T09:00:00+00:00', 'https://client.example/hook');
+
+        $this->bus->failFor(ProcessVideoTaskCommand::class, new \RuntimeException('el broker no responde'));
+
+        $report = $this->recover()->run($this->cutoff());
+
+        self::assertSame([], $report->requeuedTaskIds, 'the task was not published, and is not reported as if it were');
+        self::assertSame([$owed->id()->value], $report->renotifiedTaskIds);
+        self::assertContainsEquals(
+            new NotifyTaskCallback($owed->id()->value, 'completed', $owed->runGeneration()),
+            $this->bus->dispatched,
+        );
+    }
+
     public function testACallbackAlreadyDeliveredIsNotSentTwice(): void
     {
         $task = $this->settledTask('2026-03-01T09:00:00+00:00', 'https://client.example/hook');
