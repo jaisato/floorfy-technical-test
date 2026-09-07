@@ -13,9 +13,9 @@ namespace App\Shared\Application\Redaction;
  * up in the application log and, once the retries are spent, in the failure
  * transport, where whoever operates either can read them.
  *
- * So a URL is named by what identifies it - scheme, host, port, path - and
- * never by its userinfo or its query. That applies to what a lower layer said
- * as well: Symfony's transport exceptions quote the whole request URL back
+ * So a URL is named by where it points - scheme, host, port - and never by its
+ * userinfo, its path or its query. That applies to what a lower layer said as
+ * well: Symfony's transport exceptions quote the whole request URL back
  * (`... for "https://bot:s3cr3t@host/path?token=…"`), which is how a message
  * that nobody wrote deliberately puts a secret in a log line.
  */
@@ -41,14 +41,26 @@ final class Urls
     }
 
     /**
-     * A URL without anything that could be a credential: scheme, host, port and
-     * path, which is what identifies it in a log.
+     * A URL without anything that could be a credential: scheme, host and port,
+     * which is where it points, plus a mark for each part that was dropped.
      *
      * The query goes whole rather than by parameter name: `?token=`, `?key=`,
      * `?sig=`, `?X-Amz-Signature=` and whatever the next service calls it are
      * not a list this can keep up with, and a query that is only `?taskId=` is
-     * already in the log line beside this one. A URL that will not parse is
-     * reported as such instead of echoed.
+     * already in the log line beside this one.
+     *
+     * The path goes for the same reason, which took one more round to see. A
+     * webhook's credential lives there as often as in the query - Slack's is
+     * `/services/T…/B…/<token>`, and `/hooks/<secret>` is the usual shape
+     * elsewhere - and this feeds the `callback_url` and `image_url` of the
+     * public task representation, so anyone who could list tasks could read
+     * them. Nor is there a rule that keeps the safe part: the secret is the
+     * whole path in one service, the last segment in another and the first in a
+     * third, and picking by shape is the same losing game as picking by
+     * parameter name. What identifies the endpoint for an operator is the host
+     * it points at; which task it belongs to is on the same line already.
+     *
+     * A URL that will not parse is reported as such instead of echoed.
      */
     public static function endpoint(string $url): string
     {
@@ -58,12 +70,15 @@ final class Urls
             return '(URL ilegible)';
         }
 
+        $path = $parts['path'] ?? '';
+
         return \sprintf(
-            '%s%s%s%s',
+            '%s%s%s%s%s',
             isset($parts['scheme']) ? $parts['scheme'].'://' : '',
             $parts['host'],
             isset($parts['port']) ? ':'.$parts['port'] : '',
-            $parts['path'] ?? '',
-        ).(isset($parts['query']) ? '?…' : '');
+            '' === $path || '/' === $path ? $path : '/…',
+            isset($parts['query']) ? '?…' : '',
+        );
     }
 }

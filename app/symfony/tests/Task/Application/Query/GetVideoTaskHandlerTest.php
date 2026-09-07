@@ -59,7 +59,7 @@ final class GetVideoTaskHandlerTest extends TestCase
         self::assertSame($task->id()->value, $view->summary->taskId);
         self::assertSame('pending', $view->summary->status);
         self::assertSame(
-            ['https://example.com/a.png', 'https://example.com/b.png'],
+            ['https://example.com/…', 'https://example.com/…'],
             array_column($view->partialVideosAsArray(), 'image_url'),
         );
     }
@@ -123,7 +123,7 @@ final class GetVideoTaskHandlerTest extends TestCase
         self::assertSame([
             [
                 'id' => $done->id()->value,
-                'image_url' => 'https://example.com/a.png',
+                'image_url' => 'https://example.com/…',
                 'transition' => 'pan',
                 'status' => 'completed',
                 'video_url' => 'http://localhost:8080/videos/partial_a.mp4',
@@ -131,7 +131,7 @@ final class GetVideoTaskHandlerTest extends TestCase
             ],
             [
                 'id' => $broken->id()->value,
-                'image_url' => 'https://example.com/b.png',
+                'image_url' => 'https://example.com/…',
                 'transition' => 'zoom_out',
                 'status' => 'failed',
                 'video_url' => null,
@@ -167,7 +167,7 @@ final class GetVideoTaskHandlerTest extends TestCase
 
         self::assertNotNull($view);
         self::assertSame(
-            ['https://bucket.s3.example.com/in/a.png?…', 'https://origin.example.com/b.png'],
+            ['https://bucket.s3.example.com/…?…', 'https://origin.example.com/…'],
             array_column($view->partialVideosAsArray(), 'image_url'),
         );
     }

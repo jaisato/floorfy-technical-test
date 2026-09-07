@@ -78,7 +78,7 @@ final class TaskControllerTest extends ApiTestCase
 
         $this->client->request('GET', '/api/tasks/'.$taskId);
 
-        self::assertSame('https://8.8.8.8/hooks/video-tasks', $this->responseBody()['callback_url']);
+        self::assertSame('https://8.8.8.8/…', $this->responseBody()['callback_url']);
     }
 
     /**
@@ -86,8 +86,10 @@ final class TaskControllerTest extends ApiTestCase
      * query is the ordinary way to write one. Served whole, GET /api/tasks/{id}
      * and every item of GET /api/tasks handed that credential to whoever
      * asked - and the listing needs no id, on an API that is open unless a key
-     * is configured and shared between clients when it is. The endpoint is
-     * still named, which is what the field is for.
+     * is configured and shared between clients when it is. The path goes with
+     * them: a webhook's token lives there as often as in the query - Slack's
+     * is `/services/T…/B…/<token>` - so the field names the host the callback
+     * points at and nothing more.
      */
     public function testACallbackUrlIsServedWithoutItsCredentials(): void
     {
@@ -99,13 +101,13 @@ final class TaskControllerTest extends ApiTestCase
         $taskId = $this->responseBody()['task_id'];
 
         $this->client->request('GET', '/api/tasks/'.$taskId);
-        self::assertSame('https://8.8.8.8/hooks/video-tasks?…', $this->responseBody()['callback_url']);
+        self::assertSame('https://8.8.8.8/…?…', $this->responseBody()['callback_url']);
         $this->assertNothingSecretInTheResponse();
 
         // The listing is the one an unrelated caller reaches without knowing an id.
         $this->client->request('GET', '/api/tasks');
         $this->assertNothingSecretInTheResponse();
-        self::assertSame('https://8.8.8.8/hooks/video-tasks?…', $this->responseBody()['items'][0]['callback_url']);
+        self::assertSame('https://8.8.8.8/…?…', $this->responseBody()['items'][0]['callback_url']);
     }
 
     private function assertNothingSecretInTheResponse(): void
@@ -266,7 +268,7 @@ final class TaskControllerTest extends ApiTestCase
         self::assertSame([
             [
                 'id' => $body['partial_videos'][0]['id'],
-                'image_url' => 'https://example.com/a.png',
+                'image_url' => 'https://example.com/…',
                 'transition' => 'zoom_in',
                 'status' => 'pending',
                 'video_url' => null,

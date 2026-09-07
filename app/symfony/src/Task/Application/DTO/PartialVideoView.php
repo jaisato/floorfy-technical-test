@@ -24,14 +24,14 @@ final readonly class PartialVideoView
         return [
             'id' => $this->id,
             // The source of an image is routinely presigned - an object store
-            // puts the signature in the query, and a private origin sometimes
-            // puts credentials in the userinfo - and this handed it back whole
-            // to whoever reads the task. The listing exposes every task id, and
-            // the API is open unless a deployment turns tokens on, so a caller
-            // could walk the ids and collect the credential of every source
-            // anybody had ever submitted. Redacted like `callback_url`, it
-            // still answers what the field is for: which image this part
-            // renders from.
+            // puts the signature in the query, a private origin sometimes puts
+            // credentials in the userinfo, and a CDN sometimes puts a token in
+            // the path - and this handed it back whole to whoever reads the
+            // task. The listing exposes every task id, and the API is open
+            // unless a deployment turns tokens on, so a caller could walk the
+            // ids and collect the credential of every source anybody had ever
+            // submitted. What is left names where the image came from; which
+            // part of the task it is, its own id and position already say.
             'image_url' => Urls::endpoint($this->imageUrl),
             'transition' => $this->transition,
             'status' => $this->status,
