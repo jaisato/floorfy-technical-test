@@ -752,7 +752,8 @@ final class ProcessVideoTaskHandlerTest extends TestCase
         $logged = $logger->everythingLogged();
         self::assertStringNotContainsString('deadbeef', $logged);
         self::assertStringNotContainsString('X-Amz-Signature', $logged);
-        self::assertStringContainsString('https://bucket.s3.amazonaws.com/img/a.png?…', $logged, 'the object is still named');
+        self::assertStringNotContainsString('/img/a.png', $logged, 'nor the path, which is where a webhook keeps its token');
+        self::assertStringContainsString('https://bucket.s3.amazonaws.com/…?…', $logged, 'the host it went to is still named');
         self::assertStringContainsString('Connection timed out', $logged, 'and so is what went wrong');
     }
 

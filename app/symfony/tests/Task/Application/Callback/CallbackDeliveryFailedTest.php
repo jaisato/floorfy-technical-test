@@ -23,7 +23,7 @@ final class CallbackDeliveryFailedTest extends TestCase
     {
         $failure = CallbackDeliveryFailed::status('https://bot:s3cr3t@client.example:8443/hook?token=abcdef', 500);
 
-        self::assertStringContainsString('https://client.example:8443/hook?…', $failure->getMessage());
+        self::assertStringContainsString('https://client.example:8443/…?…', $failure->getMessage());
         self::assertStringContainsString('HTTP 500', $failure->getMessage());
         self::assertStringNotContainsString('s3cr3t', $failure->getMessage());
         self::assertStringNotContainsString('abcdef', $failure->getMessage());
@@ -37,7 +37,7 @@ final class CallbackDeliveryFailedTest extends TestCase
             new \RuntimeException('Connection timed out'),
         );
 
-        self::assertStringContainsString('https://client.example/hook?…', $failure->getMessage());
+        self::assertStringContainsString('https://client.example/…?…', $failure->getMessage());
         self::assertStringNotContainsString('s3cr3t', $failure->getMessage());
         self::assertStringNotContainsString('abcdef', $failure->getMessage());
         self::assertStringContainsString('Connection timed out', $failure->getMessage());
@@ -47,7 +47,7 @@ final class CallbackDeliveryFailedTest extends TestCase
     public function testAnOrdinaryUrlIsLeftAlone(): void
     {
         self::assertStringContainsString(
-            'https://client.example/hook respondió HTTP 404',
+            'https://client.example/… respondió HTTP 404',
             CallbackDeliveryFailed::status('https://client.example/hook', 404)->getMessage(),
         );
     }
@@ -101,7 +101,7 @@ final class CallbackDeliveryFailedTest extends TestCase
 
         self::assertStringNotContainsString('s3cr3t', $failure->getMessage());
         self::assertStringNotContainsString('abcdef', $failure->getMessage());
-        self::assertStringContainsString('Could not resolve host for "https://client.example/hook?…".', $failure->getMessage());
+        self::assertStringContainsString('Could not resolve host for "https://client.example/…?…".', $failure->getMessage());
     }
 
     /** The class of what failed is the part of the chain worth keeping. */
