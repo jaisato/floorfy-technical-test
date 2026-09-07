@@ -44,18 +44,35 @@ final class AttemptInFlight
      * Records the attempt this worker holds, by the generation it will have
      * handed back if it fails.
      *
-     * @param int|null $generation null when the claim was already gone, so
-     *                             there is nothing of this attempt's to fail
+     * The task is recorded either way. A null generation means the claim was
+     * already gone - canceled, or taken over - and there is nothing of this
+     * attempt's left to fail; forgetting the task as well made that
+     * indistinguishable from "no attempt was ever recorded", which is the one
+     * case the listener answers by failing whatever is running now. A
+     * replacement run, pending or processing, was then marked failed by the
+     * attempt it replaced.
+     *
+     * @param int|null $generation null when the claim was already gone
      */
     public function released(UuidValue $taskId, ?int $generation): void
     {
-        $this->taskId = null === $generation ? null : $taskId->value;
+        $this->taskId = $taskId->value;
         $this->generation = $generation;
     }
 
-    /** The generation this worker handed back for that task, if it was this one. */
+    /** Whether this worker ran an attempt of that task during this delivery. */
+    public function ran(UuidValue $taskId): bool
+    {
+        return $this->taskId === $taskId->value;
+    }
+
+    /**
+     * The generation this worker handed back for that task; null when it ran
+     * the task but no longer owned it, and null when it never ran it at all.
+     * `ran()` is what tells those two apart.
+     */
     public function generationOf(UuidValue $taskId): ?int
     {
-        return $this->taskId === $taskId->value ? $this->generation : null;
+        return $this->ran($taskId) ? $this->generation : null;
     }
 }

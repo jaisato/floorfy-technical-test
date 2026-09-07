@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Task\Application\Callback;
 
 use App\Shared\Application\Redaction\Urls;
+use App\Shared\Domain\Exception\PermanentFailure;
 
 /**
  * A notification that did not reach its endpoint.
@@ -40,9 +41,20 @@ final class CallbackDeliveryFailed extends \RuntimeException
         return $this->permanent;
     }
 
+    /**
+     * The guard would not let the notification be sent.
+     *
+     * Permanent only when the guard's answer is: a scheme, a port or a private
+     * address is a property of the URL, and the twentieth attempt reaches the
+     * first one's conclusion. A host that did not resolve is a property of the
+     * moment, and calling it permanent marked the callback abandoned - which is
+     * how the recovery sweep is told to stop offering the task - so a few
+     * seconds of resolver trouble silently cost the client every notification
+     * owed during it.
+     */
     public static function refused(string $url, \Throwable $cause): self
     {
-        return new self(\sprintf('La URL de callback fue rechazada: %s', self::explain($cause)), true);
+        return new self(\sprintf('La URL de callback fue rechazada: %s', self::explain($cause)), $cause instanceof PermanentFailure);
     }
 
     public static function unsigned(): self

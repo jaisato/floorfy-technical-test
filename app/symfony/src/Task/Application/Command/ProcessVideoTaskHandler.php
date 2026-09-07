@@ -189,7 +189,7 @@ final readonly class ProcessVideoTaskHandler
                 // left to do and the response says which ones they were.
                 ++$failed;
                 $permanent += $e instanceof PermanentFailure ? 1 : 0;
-                $this->recordPartialFailure($partial, $e);
+                $this->recordPartialFailure($partial, $e, $generation);
             }
         }
 
@@ -217,17 +217,6 @@ final readonly class ProcessVideoTaskHandler
     }
 
     /**
-     * One write that both proves this attempt still owns the task and pushes
-     * the lease forward.
-     *
-     * It replaces a plain status read: reading told us about a cancellation but
-     * said nothing about the lease, which kept expiring underneath a run that
-     * was making perfectly good progress. The update touches the row only while
-     * it is still "processing", so it fails for a cancellation and for a task
-     * another worker has already taken over - and either way this attempt has
-     * no business carrying on.
-     */
-    /**
      * How long a claim stands without a renewal before the task counts as
      * abandoned.
      *
@@ -253,6 +242,17 @@ final readonly class ProcessVideoTaskHandler
         return max($this->leaseSeconds, $longestStep + self::LEASE_SLACK_SECONDS);
     }
 
+    /**
+     * One write that both proves this attempt still owns the task and pushes
+     * the lease forward.
+     *
+     * It replaces a plain status read: reading told us about a cancellation but
+     * said nothing about the lease, which kept expiring underneath a run that
+     * was making perfectly good progress. The update touches the row only while
+     * it is still "processing", so it fails for a cancellation and for a task
+     * another worker has already taken over - and either way this attempt has
+     * no business carrying on.
+     */
     private function keepClaim(UuidValue $taskId, int $generation): void
     {
         if ($this->tasks->renewLease($taskId, $generation, $this->clock->now())) {
@@ -452,12 +452,27 @@ final readonly class ProcessVideoTaskHandler
         return is_file($file) ? $file : null;
     }
 
-    private function recordPartialFailure(PartialVideo $partial, \Throwable $e): void
+    private function recordPartialFailure(PartialVideo $partial, \Throwable $e, int $generation): void
     {
         $this->logFailure('Partial failed', $e, [
             'task_id' => $partial->taskId()->value,
             'partial_id' => $partial->id()->value,
         ]);
+
+        // Fenced by the run, exactly as publication is. A task canceled and
+        // retried while this part was downloading or inside ffmpeg has a
+        // replacement attempt that may already have rendered this very part and
+        // saved its row as completed. Written unconditionally, this marked it
+        // failed again on top of that: a task the API reports as completed,
+        // with a part that carries an error and no clip URL.
+        if (!$this->tasks->renewLease($partial->taskId(), $generation, $this->clock->now())) {
+            $this->logger->info('Partial failure not recorded: the attempt no longer holds the task', [
+                'task_id' => $partial->taskId()->value,
+                'partial_id' => $partial->id()->value,
+            ]);
+
+            return;
+        }
 
         $partial->markFailed(self::shortReason($e), $this->clock->now());
         $this->partials->save($partial);

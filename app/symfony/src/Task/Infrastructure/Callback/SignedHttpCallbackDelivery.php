@@ -7,8 +7,8 @@ namespace App\Task\Infrastructure\Callback;
 use App\Task\Application\Callback\CallbackDelivery;
 use App\Task\Application\Callback\CallbackDeliveryFailed;
 use App\Task\Application\Callback\CallbackRequest;
-use App\Task\Infrastructure\Media\BlockedUrl;
 use App\Task\Infrastructure\Media\PublicUrlGuard;
+use App\Task\Infrastructure\Media\UrlNotFetchable;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -25,15 +25,25 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * and redirects are not followed - a permitted URL redirecting inward would
  * otherwise defeat the check.
  *
- * The body is signed with HMAC-SHA256 under a per-deployment secret and the
- * signature travels in X-Task-Signature, so the receiver can tell a real
- * notification from a forged one.
+ * The notification is signed with HMAC-SHA256 under a per-deployment secret and
+ * the signature travels in X-Task-Signature, so the receiver can tell a real
+ * notification from a forged one - and, just as much, an altered one.
+ *
+ * What is signed is the metadata *and* the body, not the body alone. The
+ * announced event is deliberately not derivable from the body: the body is the
+ * task as it stands when the notification is delivered, so a `task.failed`
+ * delivered after a retry has a body that says `pending`. Covering only the
+ * body therefore left the one field the receiver cannot reconstruct as the one
+ * field an on-path party could rewrite for free on an allowed `http://`
+ * endpoint - turning a failure into a completion, or a notification of this run
+ * into one of the last. The run number is in there for the same reason.
  */
 final readonly class SignedHttpCallbackDelivery implements CallbackDelivery
 {
     public const string SIGNATURE_HEADER = 'X-Task-Signature';
     public const string EVENT_HEADER = 'X-Task-Event';
     public const string TASK_HEADER = 'X-Task-Id';
+    public const string RUN_HEADER = 'X-Task-Run';
 
     public function __construct(
         private HttpClientInterface $httpClient,
@@ -52,19 +62,25 @@ final readonly class SignedHttpCallbackDelivery implements CallbackDelivery
 
         try {
             $ips = $this->urlGuard->assertFetchable($request->url);
-        } catch (BlockedUrl $e) {
+        } catch (UrlNotFetchable $e) {
             throw CallbackDeliveryFailed::refused($request->url, $e);
         }
 
         $body = json_encode($request->body, \JSON_THROW_ON_ERROR | \JSON_UNESCAPED_SLASHES | \JSON_UNESCAPED_UNICODE);
+        $event = 'task.'.$request->event;
+        $run = (string) $request->generation;
 
         $options = [
             'headers' => [
                 'Content-Type' => 'application/json',
                 'User-Agent' => 'floorfy-video-tasks',
-                self::EVENT_HEADER => 'task.'.$request->event,
+                self::EVENT_HEADER => $event,
                 self::TASK_HEADER => $request->taskId,
-                self::SIGNATURE_HEADER => self::signature($body, $this->signingSecret),
+                self::RUN_HEADER => $run,
+                self::SIGNATURE_HEADER => self::signature(
+                    self::signedPayload($event, $request->taskId, $run, $body),
+                    $this->signingSecret,
+                ),
             ],
             'body' => $body,
             'max_redirects' => 0,
@@ -91,12 +107,29 @@ final readonly class SignedHttpCallbackDelivery implements CallbackDelivery
     }
 
     /**
-     * What a receiver computes to verify the notification:
-     * "sha256=" followed by the hex HMAC-SHA256 of the exact body bytes.
+     * The exact bytes the signature covers: the three headers that say which
+     * notification this is, then the body, one per line.
+     *
+     * Newline-separated and in this order because every field before the body
+     * is one line by construction - `task.` and a status, a UUID, a decimal
+     * integer - so no combination of values can be read as another, and the
+     * body is last so its own newlines cannot shift the boundaries.
+     *
+     * The receiver builds this from what it received: the two header values
+     * verbatim, the run header, and the raw request body before any parsing.
      */
-    public static function signature(string $body, string $secret): string
+    public static function signedPayload(string $event, string $taskId, string $run, string $body): string
     {
-        return 'sha256='.hash_hmac('sha256', $body, $secret);
+        return implode("\n", [$event, $taskId, $run, $body]);
+    }
+
+    /**
+     * What a receiver computes to verify the notification: "sha256=" followed
+     * by the hex HMAC-SHA256 of signedPayload().
+     */
+    public static function signature(string $payload, string $secret): string
+    {
+        return 'sha256='.hash_hmac('sha256', $payload, $secret);
     }
 
     /**

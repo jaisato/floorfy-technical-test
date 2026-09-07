@@ -60,7 +60,7 @@ final readonly class NotifyTaskCallbackHandler
         $summary = VideoTaskSummaryView::fromTask($task, $this->partials->listByTaskId($id), $this->urls->absolute($task->finalVideoUrl()));
 
         try {
-            $this->delivery->deliver(new CallbackRequest($url, $id->value, $message->event, $summary->toArray()));
+            $this->delivery->deliver(new CallbackRequest($url, $id->value, $message->event, $message->generation, $summary->toArray()));
         } catch (CallbackDeliveryFailed $e) {
             $this->logger->warning('Callback delivery failed', [
                 'task_id' => $id->value,

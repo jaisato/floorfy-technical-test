@@ -386,17 +386,46 @@ tuviera delante.
 | `Content-Type` | `application/json` |
 | `X-Task-Event` | `task.completed`, `task.failed` o `task.canceled` |
 | `X-Task-Id` | id de la tarea |
-| `X-Task-Signature` | `sha256=<hex>`: HMAC-SHA256 del cuerpo exacto con `CALLBACK_SIGNING_SECRET` |
+| `X-Task-Run` | número de ejecución de la tarea (entero, empieza en 1) |
+| `X-Task-Signature` | `sha256=<hex>`: HMAC-SHA256 de **evento + id + ejecución + cuerpo** con `CALLBACK_SIGNING_SECRET` |
 
 El cuerpo es el **resumen de la tarea tal y como está en ese momento** (lo mismo
 que un elemento de `GET /api/tasks`, sin `partial_videos`). El evento va en la
 cabecera, así que un `task.failed` entregado tras un `retry` sigue diciendo qué
 pasó aunque el cuerpo ya muestre `pending`.
 
+Precisamente por eso la firma **no** cubre sólo el cuerpo: el evento anunciado no
+se puede reconstruir a partir de él, así que firmando sólo el cuerpo el único
+campo que el receptor no puede verificar era también el único que alguien en el
+camino podía reescribir gratis sobre un endpoint `http://` permitido —
+convirtiendo un fallo en una finalización, o la notificación de esta ejecución en
+la de la anterior. Lo firmado son las tres cabeceras que identifican la
+notificación y después el cuerpo, una por línea:
+
+```
+task.completed\n<task_id>\n<run>\n<cuerpo exacto>
+```
+
+Todo lo anterior al cuerpo ocupa una línea por construcción (`task.` + estado, un
+UUID, un entero decimal), así que ninguna combinación de valores puede leerse como
+otra, y el cuerpo va al final para que sus propios saltos de línea no muevan los
+límites.
+
+`X-Task-Run` distingue dos ejecuciones de la misma tarea: el cuerpo dice cómo está
+**ahora**, y dos ejecuciones pueden acabar las dos en `failed` en el mismo segundo
+(cancelar, reintentar y cancelar), así que es lo único con lo que el receptor puede
+ordenarlas o descartar la notificación de una ejecución ya superada.
+
 Verificación en el receptor (PHP):
 
 ```php
-$expected = 'sha256='.hash_hmac('sha256', $rawBody, $secret);
+$signed = implode("\n", [
+    $_SERVER['HTTP_X_TASK_EVENT'] ?? '',
+    $_SERVER['HTTP_X_TASK_ID'] ?? '',
+    $_SERVER['HTTP_X_TASK_RUN'] ?? '',
+    $rawBody,
+]);
+$expected = 'sha256='.hash_hmac('sha256', $signed, $secret);
 if (!hash_equals($expected, $_SERVER['HTTP_X_TASK_SIGNATURE'] ?? '')) { http_response_code(401); exit; }
 ```
 

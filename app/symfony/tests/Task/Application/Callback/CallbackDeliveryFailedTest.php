@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Tests\Task\Application\Callback;
 
 use App\Task\Application\Callback\CallbackDeliveryFailed;
+use App\Task\Infrastructure\Media\BlockedUrl;
+use App\Task\Infrastructure\Media\UnresolvableHost;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -65,10 +67,24 @@ final class CallbackDeliveryFailedTest extends TestCase
      */
     public function testARefusedUrlIsPermanent(): void
     {
-        $failure = CallbackDeliveryFailed::refused('http://10.0.0.1/hook', new \RuntimeException('dirección privada'));
+        $failure = CallbackDeliveryFailed::refused('http://10.0.0.1/hook', BlockedUrl::privateAddress('client.example', '10.0.0.1'));
 
         self::assertTrue($failure->isPermanent());
-        self::assertStringContainsString('dirección privada', $failure->getMessage());
+        self::assertStringContainsString('dirección no pública', $failure->getMessage());
+    }
+
+    /**
+     * A host that did not resolve is not one of those. Permanence used to be
+     * hardcoded here, so a resolver that was down for a few seconds marked the
+     * callback abandoned - which is precisely how the recovery sweep is told to
+     * stop offering the task - and the client was never told, then or later.
+     */
+    public function testAHostThatDidNotResolveIsWorthRetrying(): void
+    {
+        $failure = CallbackDeliveryFailed::refused('http://client.example/hook', UnresolvableHost::host('client.example'));
+
+        self::assertFalse($failure->isPermanent());
+        self::assertStringContainsString('No se pudo resolver el host', $failure->getMessage());
     }
 
     /**

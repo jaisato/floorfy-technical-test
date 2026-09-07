@@ -12,6 +12,7 @@ use App\Task\Application\Url\VideoUrls;
 use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\Enum\Transition;
+use App\Task\Infrastructure\Media\BlockedUrl;
 use App\Tests\Support\FakeCallbackDelivery;
 use App\Tests\Support\FixedClock;
 use App\Tests\Support\InMemoryPartialVideoRepository;
@@ -143,7 +144,7 @@ final class NotifyTaskCallbackHandlerTest extends TestCase
     public function testAPermanentDeliveryFailureIsNotRetried(): void
     {
         $task = $this->taskWithCallback();
-        $this->delivery->failWith(CallbackDeliveryFailed::refused('http://10.0.0.1/hook', new \RuntimeException('private')));
+        $this->delivery->failWith(CallbackDeliveryFailed::refused('http://10.0.0.1/hook', BlockedUrl::privateAddress('client.example', '10.0.0.1')));
 
         try {
             $this->handler()(new NotifyTaskCallback($task->id()->value, 'completed', VideoTask::FIRST_RUN));

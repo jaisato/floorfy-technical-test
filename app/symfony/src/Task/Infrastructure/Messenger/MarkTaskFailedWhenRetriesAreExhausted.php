@@ -51,6 +51,20 @@ final readonly class MarkTaskFailedWhenRetriesAreExhausted
             return;
         }
 
+        $generation = $this->attempt->generationOf($id);
+
+        if (null === $generation && $this->attempt->ran($id)) {
+            // The handler ran this task and lost the claim on the way: it was
+            // canceled, or declared abandoned and taken over. There is no
+            // attempt of this delivery's left to fail, and the unconditional
+            // transition below is not a fallback for it - whatever is pending
+            // or processing now is a replacement run, and failing that is
+            // exactly the thing the generation exists to prevent. The message
+            // is out of retries and its outcome already written by whoever took
+            // the task off it.
+            return;
+        }
+
         // One conditional UPDATE, not a read followed by a save. A task that
         // finished on another delivery keeps its result - the failure being
         // reported is of a message that had nothing left to do - and a
@@ -62,10 +76,11 @@ final readonly class MarkTaskFailedWhenRetriesAreExhausted
             $id,
             self::reason($event->getThrowable()),
             // The attempt whose message this is, as the handler recorded it
-            // when it handed the claim back. Null when no attempt can be named
-            // - the worker died, or the message never reached the handler - and
-            // then whatever is still running is what this failure is about.
-            $this->attempt->generationOf($id),
+            // when it handed the claim back. Null only when no attempt was ever
+            // recorded - the worker died, or the message never reached the
+            // handler - and then whatever is still running is what this failure
+            // is about, which is the recovery this listener exists for.
+            $generation,
             $this->clock->now(),
         );
 
