@@ -782,7 +782,7 @@ final class ProcessVideoTaskHandlerTest extends TestCase
             $this->images,
             $this->animator,
             $this->composer,
-            new TaskCallbacks($this->bus),
+            new TaskCallbacks($this->bus, $this->tasks, $this->clock),
             self::defaults(),
             $videosDir,
             self::LEASE_SECONDS,

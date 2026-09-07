@@ -93,6 +93,24 @@ final readonly class VideoUrls
         return hash_equals($this->signature($path, (int) $expires), $signature);
     }
 
+    /**
+     * How long a link still has, from the `expires` it carries.
+     *
+     * Zero for a link that is unreadable or already past, so a caller that uses
+     * this for a cache lifetime cannot hand out more time than the signature
+     * has - which is the point: a video fetched near the end of its window and
+     * cached for a flat five minutes went on being served from disk after this
+     * class would have refused it.
+     */
+    public function secondsLeft(?string $expires): int
+    {
+        if (null === $expires || 1 !== preg_match('/^\d{1,10}$/', $expires)) {
+            return 0;
+        }
+
+        return max(0, (int) $expires - $this->clock->now()->toDateTimeImmutable()->getTimestamp());
+    }
+
     private function signature(string $path, int $expires): string
     {
         // The path and the deadline both inside the MAC, separated by a

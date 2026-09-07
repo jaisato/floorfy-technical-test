@@ -101,6 +101,16 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         // is exactly what excludes a row from the sweep, so nothing would ever
         // clean the new ones up.
         //
+        // The callback marks go with them, and for the same reason. Queuing a
+        // task again through the API clears them, but that is not the only way
+        // a run starts: `messenger:failed:retry` replays the processing message
+        // straight from the failure transport, and the claim below takes a
+        // `failed` task without anything else running first. The previous run's
+        // notification was then still recorded as delivered - or as given up
+        // on - so if the publish of the new run's own notification were lost,
+        // the recovery sweep would never offer it: it looks for settled tasks
+        // whose callback was never delivered, and this row said it had been.
+        //
         // run_generation is what the claim hands the worker. Everything it
         // writes afterwards is conditional on it, so an attempt that was taken
         // over cannot renew, release or complete a claim that is no longer
@@ -114,6 +124,9 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
                        error_message = NULL,
                        final_video_url = NULL,
                        pruned_at = NULL,
+                       callback_notified_at = NULL,
+                       callback_attempted_at = NULL,
+                       callback_abandoned_at = NULL,
                        run_generation = :next
                  WHERE id = :id
                    AND run_generation = :current
@@ -395,6 +408,26 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
         $this->forgetCachedCopy($id);
 
         return 1 === $affected;
+    }
+
+    public function markCallbackPublished(UuidValue $id, int $generation, DateTimeValue $now): void
+    {
+        // Fenced by the run, like every other callback mark: a task retried and
+        // settled again while this was being published owes its own
+        // notification, and stamping that run's row would hold it back for a
+        // cutoff it never had. Unconditional otherwise - there is no race to
+        // win here, only a date to record.
+        $this->em->getConnection()->executeStatement(
+            <<<'SQL'
+                UPDATE video_tasks
+                   SET callback_attempted_at = :now
+                 WHERE id = :id AND run_generation = :generation AND callback_url IS NOT NULL
+                SQL,
+            ['now' => $now->toDateTimeImmutable(), 'id' => $id->value, 'generation' => $generation],
+            ['now' => Types::DATETIME_IMMUTABLE, 'id' => ParameterType::STRING, 'generation' => ParameterType::INTEGER],
+        );
+
+        $this->forgetCachedCopy($id);
     }
 
     public function claimCallbackNotification(UuidValue $id, int $generation, DateTimeValue $before, DateTimeValue $now): bool

@@ -300,6 +300,6 @@ final class MarkTaskFailedWhenRetriesAreExhaustedTest extends TestCase
 
     private function listener(): MarkTaskFailedWhenRetriesAreExhausted
     {
-        return new MarkTaskFailedWhenRetriesAreExhausted($this->tasks, $this->clock, new TaskCallbacks($this->bus), $this->attempt);
+        return new MarkTaskFailedWhenRetriesAreExhausted($this->tasks, $this->clock, new TaskCallbacks($this->bus, $this->tasks, $this->clock), $this->attempt);
     }
 }

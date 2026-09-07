@@ -324,6 +324,15 @@ final class InMemoryVideoTaskRepository implements VideoTaskRepository
         return true;
     }
 
+    public function markCallbackPublished(UuidValue $id, int $generation, DateTimeValue $now): void
+    {
+        if (null === $this->tasks[$id->value]?->callbackUrl() || $this->generation($id) !== $generation) {
+            return;
+        }
+
+        $this->callbacksAttempted[$id->value] = $now;
+    }
+
     public function claimCallbackNotification(UuidValue $id, int $generation, DateTimeValue $before, DateTimeValue $now): bool
     {
         if (isset($this->callbacksNotified[$id->value]) || isset($this->callbacksAbandoned[$id->value])) {

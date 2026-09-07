@@ -363,6 +363,67 @@ final class DoctrineVideoTaskRepositoryTest extends DatabaseTestCase
     }
 
     /**
+     * A claim that starts a run takes the previous run's callback marks off
+     * with it.
+     *
+     * Queuing a task again through the API clears them, but that is not the
+     * only way a run starts: `messenger:failed:retry` replays the processing
+     * message straight from the failure transport, and the claim takes a
+     * `failed` task with nothing else running first. The previous run's
+     * notification stayed recorded as delivered - or as given up on - so the
+     * recovery sweep would never offer the new run's own, however lost its
+     * publish was: it looks for settled tasks whose callback was never
+     * delivered, and this row said it had been.
+     */
+    public function testClaimingAFailedTaskForgetsThePreviousRunsCallback(): void
+    {
+        $task = $this->storedTaskAwaitingCallback();
+
+        self::assertTrue($this->repository->markCallbackNotified($task->id(), $task->status()->value, $task->runGeneration(), $this->now));
+        self::assertTrue($this->repository->markCallbackAbandoned($task->id(), $task->status()->value, $task->runGeneration(), $this->now));
+        $this->connection()->executeStatement('UPDATE video_tasks SET status = ? WHERE id = ?', ['failed', $task->id()->value]);
+
+        self::assertNotNull($this->repository->claimForProcessing($task->id(), $this->now, $this->now));
+
+        $marks = $this->connection()->fetchAssociative(
+            'SELECT callback_notified_at, callback_attempted_at, callback_abandoned_at FROM video_tasks WHERE id = ?',
+            [$task->id()->value],
+        );
+
+        self::assertIsArray($marks);
+        self::assertSame([null, null, null], array_values($marks));
+    }
+
+    /**
+     * The first publication is stamped too, so the sweep counts it as attempted
+     * rather than lost.
+     *
+     * With nothing stamped, the only date the sweep had was the one the task
+     * settled at: with a ten-minute window and a transport that retries a
+     * callback for about a quarter of an hour, it published a second
+     * notification at minute ten on top of the one still being retried.
+     */
+    public function testPublishingTheFirstNotificationStampsTheAttempt(): void
+    {
+        $task = $this->storedTaskAwaitingCallback();
+
+        $this->repository->markCallbackPublished($task->id(), $task->runGeneration(), $this->now);
+
+        self::assertNotNull($this->connection()->fetchOne('SELECT callback_attempted_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
+        self::assertSame([], $this->repository->listAwaitingCallback($this->now, 10), 'and the sweep leaves it alone for a cutoff');
+    }
+
+    /** A run that is no longer the one that settled does not get its stamp. */
+    public function testAStampForAnotherRunIsNotWritten(): void
+    {
+        $task = $this->storedTaskAwaitingCallback();
+
+        $this->repository->markCallbackPublished($task->id(), $task->runGeneration() + 1, $this->now);
+
+        self::assertNull($this->connection()->fetchOne('SELECT callback_attempted_at FROM video_tasks WHERE id = ?', [$task->id()->value]));
+    }
+
+    /**
      * The listing the sweep reads, and the three states that take a task out
      * of it. The DQL is where the clause has to be, not only the claim: the
      * sweep lists first and claims what it listed.

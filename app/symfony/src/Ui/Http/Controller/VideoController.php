@@ -33,6 +33,14 @@ final readonly class VideoController
 {
     private const string NAME_PATTERN = '(?:partial|final)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.mp4';
 
+    /**
+     * The longest a signed video is worth keeping in a private cache.
+     *
+     * A ceiling, not the answer: what the link has left decides, and this only
+     * keeps a long-lived one from being held for ever.
+     */
+    private const int MAX_SIGNED_CACHE_SECONDS = 300;
+
     public function __construct(
         private VideoUrls $urls,
         #[Autowire(param: 'app.videos_dir')]
@@ -50,7 +58,9 @@ final readonly class VideoController
     )]
     public function serve(string $name, Request $request): Response
     {
-        if (!$this->urls->mayServe(VideoUrls::PREFIX.$name, $request->query->getString('expires') ?: null, $request->query->getString('sig') ?: null)) {
+        $expires = $request->query->getString('expires') ?: null;
+
+        if (!$this->urls->mayServe(VideoUrls::PREFIX.$name, $expires, $request->query->getString('sig') ?: null)) {
             // 403, not 404: the video may well exist, and pretending otherwise
             // would have a client with a stale link hunting for a lost task.
             return ApiProblem::response(Response::HTTP_FORBIDDEN, 'El enlace del vídeo no es válido o ha caducado.');
@@ -73,9 +83,19 @@ final readonly class VideoController
 
         // The bytes never change - the name carries the id - but a signed URL
         // stops working, so a shared cache must not keep serving it afterwards.
+        //
+        // And neither may a private one, past the moment the link expires. Five
+        // minutes flat outlived the signature whenever the video was fetched
+        // near the end of its window: the browser went on serving it from disk
+        // after mayServe() would have refused it, which weakens every signed
+        // URL rather than only the ones whose configured TTL is under five
+        // minutes. What the link has left is the answer; the constant is only a
+        // ceiling on a long-lived one.
         $response->headers->set(
             'Cache-Control',
-            $this->urls->signingEnabled() ? 'private, max-age=300' : 'public, max-age=2592000, immutable',
+            $this->urls->signingEnabled()
+                ? 'private, max-age='.min(self::MAX_SIGNED_CACHE_SECONDS, $this->urls->secondsLeft($expires))
+                : 'public, max-age=2592000, immutable',
         );
 
         return $response;

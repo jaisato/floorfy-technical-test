@@ -114,6 +114,33 @@ final class VideoControllerTest extends ApiTestCase
         self::assertStringContainsString('private', (string) $this->client->getResponse()->headers->get('Cache-Control'));
     }
 
+    /**
+     * Nor kept in a private one past the moment the link stops working.
+     *
+     * Five minutes flat outlived the signature whenever the video was fetched
+     * near the end of its window: the browser went on serving it from disk
+     * after the signature check would have refused it, which weakens every
+     * signed URL and not only the ones whose configured TTL is under five
+     * minutes.
+     */
+    public function testASignedUrlIsNotCachedPastItsOwnExpiry(): void
+    {
+        // A link with a minute to live, which is less than the five minutes
+        // the ceiling would otherwise hand out.
+        $this->signingClient('60');
+        $this->writeVideo(self::NAME);
+
+        $this->client->request('GET', (string) $this->urls()->absolute(VideoUrls::PREFIX.self::NAME));
+
+        $this->assertStatus(Response::HTTP_OK);
+
+        $cacheControl = (string) $this->client->getResponse()->headers->get('Cache-Control');
+        self::assertStringContainsString('private', $cacheControl);
+        self::assertSame(1, preg_match('/max-age=(\d+)/', $cacheControl, $age));
+        self::assertLessThanOrEqual(60, (int) $age[1], 'never longer than the link itself');
+        self::assertGreaterThan(0, (int) $age[1]);
+    }
+
     /** The signature covers the path, so it cannot be moved to another video. */
     public function testASignatureCannotBeMovedToAnotherVideo(): void
     {
@@ -155,9 +182,13 @@ final class VideoControllerTest extends ApiTestCase
         self::assertStringContainsString('sig=', $url);
     }
 
-    private function signingClient(): void
+    private function signingClient(?string $ttlSeconds = null): void
     {
         $this->overrideEnv('VIDEO_URL_SECRET', self::SECRET);
+
+        if (null !== $ttlSeconds) {
+            $this->overrideEnv('VIDEO_URL_TTL_SECONDS', $ttlSeconds);
+        }
 
         self::ensureKernelShutdown();
         $this->client = self::createClient();
