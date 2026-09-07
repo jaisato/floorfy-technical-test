@@ -197,7 +197,24 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
             ],
         );
 
-        if ($affected < 1) {
+        // Zero rows is not "the claim is gone" here, and this is the one
+        // statement where the difference bites: MySQL counts rows it *changed*,
+        // and `updated_at` is a DATETIME. A renewal in the same second as the
+        // claim - or as the previous one, which is every part that finishes
+        // quickly or is reused from an earlier run - writes the value the
+        // column already holds and changes nothing. The attempt then read that
+        // as having lost the task and abandoned a run that was perfectly
+        // healthy. (SQLite counts matched rows, so the test profile never saw
+        // it; the MySQL job did, the first time a test renewed twice on one
+        // clock.)
+        $stillOurs = $affected >= 1 || $this->rowMatches(
+            $id,
+            'status = :processing AND run_generation = :generation',
+            ['processing' => VideoTaskStatus::PROCESSING->value, 'generation' => $generation],
+            ['processing' => ParameterType::STRING, 'generation' => ParameterType::INTEGER],
+        );
+
+        if (!$stillOurs) {
             return false;
         }
 
@@ -274,7 +291,10 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
 
         $this->forgetCachedCopy($id);
 
-        return 1 === $affected;
+        // As in renewLease(): MySQL counts changed rows, so a mark written a
+        // second time with the same instant changes nothing and would be
+        // reported as belonging to another run.
+        return 1 === $affected || $this->marksThisRun($id, $event, $generation);
     }
 
     public function markCallbackAbandoned(UuidValue $id, string $event, int $generation, DateTimeValue $now): bool
@@ -292,7 +312,41 @@ final readonly class DoctrineVideoTaskRepository implements VideoTaskRepository
 
         $this->forgetCachedCopy($id);
 
-        return 1 === $affected;
+        return 1 === $affected || $this->marksThisRun($id, $event, $generation);
+    }
+
+    /** Whether the row is still the run a callback mark was written about. */
+    private function marksThisRun(UuidValue $id, string $event, int $generation): bool
+    {
+        return $this->rowMatches(
+            $id,
+            'status = :event AND run_generation = :generation',
+            ['event' => $event, 'generation' => $generation],
+            ['event' => ParameterType::STRING, 'generation' => ParameterType::INTEGER],
+        );
+    }
+
+    /**
+     * Whether the row still satisfies a condition an UPDATE reported no rows
+     * for.
+     *
+     * MySQL's affected-row count is rows *changed*, not rows matched, so a
+     * statement that writes a column the value it already holds reports zero -
+     * indistinguishable, from the count alone, from a condition that matched
+     * nothing. Everything here reads that count as "did the WHERE match", so
+     * where a statement can legitimately write an unchanged value the question
+     * is asked again, directly.
+     *
+     * @param array<string, mixed>                $params
+     * @param array<string, ParameterType|string> $types
+     */
+    private function rowMatches(UuidValue $id, string $condition, array $params, array $types): bool
+    {
+        return false !== $this->em->getConnection()->fetchOne(
+            'SELECT 1 FROM video_tasks WHERE id = :id AND '.$condition,
+            [...$params, 'id' => $id->value],
+            [...$types, 'id' => ParameterType::STRING],
+        );
     }
 
     public function clearCallbackNotification(UuidValue $id): void
