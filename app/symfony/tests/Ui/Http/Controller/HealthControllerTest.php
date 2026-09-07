@@ -53,6 +53,12 @@ final class HealthControllerTest extends WebTestCase
      * on. Probing only `async` left the callbacks transport - its own DSN, its
      * own vhost, its own credentials - unchecked, so a broken one answered
      * ready while no webhook could be published or consumed.
+     *
+     * The failure transport counts too, and is the easiest to forget because
+     * nothing publishes to it on purpose: a message that has spent its retries
+     * is parked there instead of being dropped, so a bad DSN loses exactly the
+     * messages somebody was going to want to look at - quietly, while the other
+     * two are reachable and the deployment is advertised as ready.
      */
     public function testReadinessAnswersForEveryQueueAndDirectory(): void
     {
@@ -61,7 +67,7 @@ final class HealthControllerTest extends WebTestCase
         $checks = $this->body()['checks'];
         self::assertIsArray($checks);
 
-        foreach (['database', 'transport', 'callbacks_transport', 'videos_dir', 'work_dir'] as $name) {
+        foreach (['database', 'transport', 'callbacks_transport', 'failure_transport', 'videos_dir', 'work_dir'] as $name) {
             self::assertArrayHasKey($name, $checks);
         }
     }

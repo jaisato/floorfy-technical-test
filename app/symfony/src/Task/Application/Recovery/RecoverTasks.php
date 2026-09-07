@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace App\Task\Application\Recovery;
 
 use App\Shared\Application\Clock\Clock;
+use App\Shared\Application\Redaction\Urls;
 use App\Shared\Domain\ValueObject\DateTimeValue;
+use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Application\Callback\NotifyTaskCallback;
 use App\Task\Application\Command\ProcessVideoTaskCommand;
 use App\Task\Domain\Port\VideoTaskRepository;
@@ -68,8 +70,8 @@ final readonly class RecoverTasks
                 continue;
             }
 
-            if (!$dryRun) {
-                $this->commandBus->dispatch(new ProcessVideoTaskCommand($task->id()->value));
+            if (!$dryRun && !$this->publish(new ProcessVideoTaskCommand($task->id()->value), $task->id())) {
+                continue;
             }
 
             $requeued[] = $task->id()->value;
@@ -91,8 +93,8 @@ final readonly class RecoverTasks
                 continue;
             }
 
-            if (!$dryRun) {
-                $this->commandBus->dispatch(new NotifyTaskCallback($task->id()->value, $task->status()->value, $task->runGeneration()));
+            if (!$dryRun && !$this->publish(new NotifyTaskCallback($task->id()->value, $task->status()->value, $task->runGeneration()), $task->id())) {
+                continue;
             }
 
             $renotified[] = $task->id()->value;
@@ -107,5 +109,39 @@ final readonly class RecoverTasks
         }
 
         return new RecoveryReport($requeued, $renotified, $dryRun);
+    }
+
+    /**
+     * Publishes one recovered message, and lets the rest of the run continue if
+     * it cannot.
+     *
+     * The two kinds travel on separately configured transports, so a broker
+     * outage or a bad DSN on one of them says nothing about the other. Thrown
+     * out of the loop, the first task whose publish failed ended the run before
+     * the callbacks were looked at - and since a stale pending task stays stale
+     * until it is republished, that meant perfectly healthy notifications were
+     * never recovered for as long as the fault lasted, which is exactly when
+     * they are most likely to be owed.
+     *
+     * The claim above is already spent for this one; the next sweep past the
+     * cutoff takes it again, which is what a lost publish looks like to this
+     * job either way.
+     */
+    private function publish(object $message, UuidValue $taskId): bool
+    {
+        try {
+            $this->commandBus->dispatch($message);
+
+            return true;
+        } catch (\Throwable $e) {
+            $this->logger->error('Recovery could not publish a message', [
+                'task_id' => $taskId->value,
+                'message' => $message::class,
+                'exception' => $e::class,
+                'reason' => Urls::scrub($e->getMessage()),
+            ]);
+
+            return false;
+        }
     }
 }

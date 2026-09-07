@@ -8,6 +8,7 @@ use App\Shared\Application\Clock\Clock;
 use App\Shared\Application\Transaction\Transaction;
 use App\Shared\Domain\ValueObject\DateTimeValue;
 use App\Shared\Domain\ValueObject\UuidValue;
+use App\Task\Application\Command\TaskLease;
 use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Entity\VideoTask;
 use App\Task\Domain\Port\PartialVideoRepository;
@@ -53,6 +54,12 @@ final readonly class PruneVideos
         private string $videosDir,
         #[Autowire(param: 'app.work_dir')]
         private string $workDir,
+        #[Autowire(param: 'app.task_lease_seconds')]
+        private int $leaseSeconds,
+        #[Autowire(param: 'app.ffmpeg_animate_timeout')]
+        private int $animateTimeoutSeconds,
+        #[Autowire(param: 'app.ffmpeg_compose_timeout')]
+        private int $composeTimeoutSeconds,
         #[Autowire(service: 'monolog.logger.task')]
         private LoggerInterface $logger,
     ) {
@@ -227,13 +234,25 @@ final readonly class PruneVideos
      *
      * A render that failed unlinks its own output, but a worker that is killed
      * outright - OOM, a container replaced mid-render - cannot, and the file
-     * stays under a name nothing will ever publish or read. Only files older
-     * than the retention cutoff are touched, which is days: a render in
-     * progress is never in that set, so no lock is needed to be sure of it.
+     * stays under a name nothing will ever publish or read.
+     *
+     * Never younger than a lease, whatever the run was asked for. "Older than
+     * the retention window" was the whole test, and the window is an option:
+     * `--older-than=1m` deleted the pathname of a file ffmpeg was still writing
+     * to - it stalls, or simply goes more than a minute between writes - and
+     * ffmpeg carried on filling an unlinked inode, after which the handler
+     * found no output and did the work again. One ffmpeg run is the longest a
+     * live render goes without touching its file, which is exactly what the
+     * lease measures, so nothing inside one is anybody's leftover. No lock is
+     * needed to be sure of that.
      */
     private function clearStaging(DateTimeValue $before, bool $dryRun): PrunedTask
     {
-        $cutoff = $before->toDateTimeImmutable()->getTimestamp();
+        $cutoff = min(
+            $before->toDateTimeImmutable()->getTimestamp(),
+            $this->clock->now()->toDateTimeImmutable()->getTimestamp()
+                - TaskLease::seconds($this->leaseSeconds, $this->animateTimeoutSeconds, $this->composeTimeoutSeconds),
+        );
         $files = 0;
         $bytes = 0;
 

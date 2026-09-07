@@ -446,6 +446,31 @@ final class PruneVideosTest extends TestCase
         self::assertSame(0, $report->files);
     }
 
+    /**
+     * A short window does not reach into a render in progress.
+     *
+     * "Older than the retention cutoff" was the whole test, and the cutoff is
+     * an option: `--older-than=1m` unlinked the pathname of a file ffmpeg was
+     * still writing to - it stalls, or simply goes more than a minute between
+     * writes - and ffmpeg carried on filling an inode with no name, after which
+     * the handler found no output and did the work again. The lease is the
+     * longest a live render goes without touching its file, and nothing inside
+     * one is anybody's leftover.
+     */
+    public function testAShortWindowStillLeavesARenderInProgressAlone(): void
+    {
+        // Four minutes old, under the five-minute lease this suite configures.
+        $inFlight = $this->stagedFile('g1_partial_slow.mp4', '2026-02-28T23:56:00+00:00');
+        // And an hour old, which no run can still be inside.
+        $dead = $this->stagedFile('g1_partial_dead.mp4', '2026-02-28T23:00:00+00:00');
+
+        $report = $this->prune()->run(DateTimeValue::fromString('2026-03-01T00:00:00+00:00')->minusSeconds(60));
+
+        self::assertFileExists($inFlight, 'ffmpeg may still be writing to it');
+        self::assertFileDoesNotExist($dead);
+        self::assertSame(1, $report->files);
+    }
+
     /** A dry run says what would go without touching any of it. */
     public function testADryRunLeavesStagingAlone(): void
     {
@@ -473,7 +498,12 @@ final class PruneVideosTest extends TestCase
             $transaction ?? new SpyTransaction(),
             $this->dir->file('videos'),
             $this->dir->file('work'),
-            $logger ?? new NullLogger(),
+            // A lease of five minutes: the floor under the staging cutoff, so a
+            // file younger than one ffmpeg run is never anybody's leftover.
+            leaseSeconds: 300,
+            animateTimeoutSeconds: 1,
+            composeTimeoutSeconds: 1,
+            logger: $logger ?? new NullLogger(),
         );
     }
 

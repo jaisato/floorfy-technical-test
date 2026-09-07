@@ -14,7 +14,6 @@ use App\Task\Application\Callback\TaskCallbacks;
 use App\Task\Application\Url\VideoUrls;
 use App\Task\Domain\Entity\PartialVideo;
 use App\Task\Domain\Entity\VideoTask;
-use App\Task\Domain\Enum\VideoTaskStatus;
 use App\Task\Domain\Exception\TaskCanceled;
 use App\Task\Domain\Exception\TaskProcessingFailed;
 use App\Task\Domain\Port\ImageAnimator;
@@ -45,8 +44,10 @@ use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
  * - A message that can never succeed (an id that is not a UUID, a task with no
  *   images) is refused outright rather than retried twenty times.
  * - A cancellation that arrives mid-run is noticed at the next part boundary:
- *   the attempt stops, the message is acknowledged, and what was rendered so
- *   far stays on disk for a later retry to reuse.
+ *   the attempt stops and the message is acknowledged. Parts published before
+ *   it are on disk and a retry reuses them; the one that was in flight is not,
+ *   because publishing it means writing a name every run of the task shares
+ *   and this attempt no longer holds the row (see mayPublish()).
  * - The claim is renewed at each of those boundaries. The lease used to be
  *   measured from the moment the task was claimed, so a long but perfectly
  *   healthy run - twenty images take as long as they take - outlived it and a
@@ -56,13 +57,6 @@ use Symfony\Component\Messenger\Exception\UnrecoverableMessageHandlingException;
 #[AsMessageHandler(bus: 'messenger.bus.command')]
 final readonly class ProcessVideoTaskHandler
 {
-    /**
-     * On top of the longest ffmpeg run, to cover what happens around it: the
-     * rename that publishes the file, the conditional UPDATE that completes the
-     * task, and the difference between two workers' clocks. See lease().
-     */
-    private const int LEASE_SLACK_SECONDS = 300;
-
     public function __construct(
         private VideoTaskRepository $tasks,
         private AttemptInFlight $attempt,
@@ -216,30 +210,10 @@ final readonly class ProcessVideoTaskHandler
         $this->composeFinal($task, $clips, $options, $generation);
     }
 
-    /**
-     * How long a claim stands without a renewal before the task counts as
-     * abandoned.
-     *
-     * The renewals happen between parts and never during one - a running ffmpeg
-     * is left to finish its clip, which is what lets a retry reuse it - so the
-     * longest a healthy attempt goes without touching the row is one ffmpeg
-     * run, and the lease has to outlast that or the attempt declares itself
-     * abandoned. Shipped, TASK_LEASE_SECONDS and FFMPEG_COMPOSE_TIMEOUT were
-     * the same hour: a composition that used its whole budget expired the lease
-     * exactly as it finished, and the next delivery of any message for that
-     * task re-rendered everything on top of a worker that was still writing.
-     *
-     * So the configured value is a floor, not the answer: what the claim
-     * actually gets is whichever is longer, and the operator's number decides
-     * how quickly a genuinely dead worker's task comes back - which cannot be
-     * sooner than the longest run they allow, because until then the two look
-     * identical from here.
-     */
+    /** How long this attempt's claim is good for; see TaskLease. */
     private function lease(): int
     {
-        $longestStep = max($this->animateTimeoutSeconds, $this->composeTimeoutSeconds);
-
-        return max($this->leaseSeconds, $longestStep + self::LEASE_SLACK_SECONDS);
+        return TaskLease::seconds($this->leaseSeconds, $this->animateTimeoutSeconds, $this->composeTimeoutSeconds);
     }
 
     /**
@@ -413,23 +387,29 @@ final readonly class ProcessVideoTaskHandler
             return true;
         }
 
-        // Not this attempt's any more, and what to do depends on who has it. A
-        // cancellation leaves these names nobody's: the clip is worth keeping,
-        // because a retry reuses a part that is already rendered and the
-        // retention job clears it with the rest of the task if none comes. A
-        // *replacement attempt* is the other case - it owns these names now,
-        // and publishing over it puts this attempt's output where the other's
-        // belongs, or unlinks a file that is still being written.
-        if (VideoTaskStatus::PROCESSING !== $this->tasks->currentStatus($taskId)) {
-            return true;
-        }
-
+        // And that write is the whole answer: not this attempt's row any more
+        // means it publishes nothing, whoever has it.
+        //
+        // A status read used to make an exception for a cancellation, on the
+        // grounds that the names were then nobody's and the finished clip was
+        // worth keeping for a later retry. But reading a status and renaming a
+        // file are two steps, and a retry that claims the task in between owns
+        // those names by the time the rename lands: this attempt's clip went
+        // where the replacement's belongs, and its partial was marked completed
+        // over work that was still running. The published name is shared by
+        // every run of the task, so the only way to keep the clip was to
+        // publish it, and publishing it is exactly the unsafe act. A cancel
+        // followed by a retry therefore re-renders the part that was in
+        // flight - one part, on a path that only exists because somebody
+        // changed their mind - and nothing is ever written on another run's
+        // behalf.
+        //
         // Nothing will ever publish or read the staged file now, and the
         // retention job enumerates the published names only, so it would sit
         // on the volume for as long as the deployment does.
         @unlink($staged);
 
-        $this->logger->info('Another attempt holds the task; this one publishes nothing', [
+        $this->logger->info('The task is no longer this attempt\'s; it publishes nothing', [
             'task_id' => $taskId->value,
             'generation' => $generation,
         ]);
