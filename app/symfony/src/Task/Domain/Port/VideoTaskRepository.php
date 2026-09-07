@@ -170,6 +170,21 @@ interface VideoTaskRepository
     public function claimCallbackNotification(UuidValue $id, int $generation, DateTimeValue $before, DateTimeValue $now): bool;
 
     /**
+     * Records that this run's notification has just been published, so the
+     * recovery sweep counts it as attempted rather than lost.
+     *
+     * The sweep looks for a settled task whose callback was never delivered and
+     * whose last attempt - if any - is older than the cutoff. The first
+     * publication stamped nothing, so the only date it had to go on was the one
+     * the task settled at: with a ten-minute window and a callback transport
+     * that retries for about a quarter of an hour, the sweep published a second
+     * notification at minute ten while the first was still being retried, and
+     * the client got the same event twice. The publication is stamped the way
+     * the sweep stamps its own, before it goes out.
+     */
+    public function markCallbackPublished(UuidValue $id, int $generation, DateTimeValue $now): void;
+
+    /**
      * Records that the callback for a task was delivered, so the sweep above
      * stops offering it - but only while the task still stands where the
      * delivered notification said it did.

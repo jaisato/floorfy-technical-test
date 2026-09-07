@@ -166,6 +166,6 @@ final class CancelVideoTaskHandlerTest extends TestCase
 
     private function handler(): CancelVideoTaskHandler
     {
-        return new CancelVideoTaskHandler($this->tasks, $this->clock, new TaskCallbacks($this->bus), new RecordingLogger());
+        return new CancelVideoTaskHandler($this->tasks, $this->clock, new TaskCallbacks($this->bus, $this->tasks, $this->clock), new RecordingLogger());
     }
 }
