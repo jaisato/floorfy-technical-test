@@ -1,9 +1,42 @@
-# app/symfony/config/services.yaml
+# Service container. Autowiring is on, so only what the container cannot infer
+# is written here: scalar arguments, and which adapter backs each port.
 parameters:
-    app.storage_dir: '%kernel.project_dir%/public'
-    app.public_base_url: '%env(resolve:BASE_PUBLIC_URL)%'
-    app.gcp.scopes: 'https://www.googleapis.com/auth/cloud-platform'
-    app.ffmpeg_work_dir: '%kernel.project_dir%/var/video_work'
+    # Scratch space: downloaded images and ffmpeg's concat lists. Never served.
+    # Mounted as a Docker volume at the same path in the container.
+    app.work_dir: '%kernel.project_dir%/var/work'
+
+    # The directory nginx publishes as /videos, and the base URL that maps onto
+    # it. One variable: the previous pair (APP_URL, BASE_PUBLIC_URL) had the
+    # worker building URLs from whichever of the two was set.
+    app.videos_dir: '%kernel.project_dir%/public/videos'
+    app.public_base_url: '%env(resolve:APP_URL)%'
+
+    # How long a claimed task may stay "processing" before another worker is
+    # allowed to take it over, for the case where the first one was killed.
+    app.task_lease_seconds: '%env(int:TASK_LEASE_SECONDS)%'
+
+    # How long an Idempotency-Key is remembered; a key reused after that starts
+    # a new request.
+    app.idempotency_ttl_seconds: '%env(int:IDEMPOTENCY_TTL_SECONDS)%'
+
+    # How long a signed video URL stays valid. Long enough to start playing a
+    # video the API just handed over, short enough that a leaked link is not a
+    # permanent one.
+    app.video_url_ttl_seconds: '%env(int:VIDEO_URL_TTL_SECONDS)%'
+
+    # Defaults for the render options a task does not choose.
+    app.render.duration: '%env(float:RENDER_DEFAULT_DURATION)%'
+    app.render.fps: '%env(int:RENDER_DEFAULT_FPS)%'
+    app.render.resolution: '%env(RENDER_DEFAULT_RESOLUTION)%'
+    app.render.crossfade: '%env(float:RENDER_DEFAULT_CROSSFADE)%'
+
+    # Budget for the ffmpeg probe of /health/ready. A readiness answer that
+    # takes longer than the prober's own timeout is worse than a failed one.
+    app.health_probe_timeout: 5
+
+    app.ffmpeg_animate_timeout: '%env(int:FFMPEG_ANIMATE_TIMEOUT)%'
+    app.ffmpeg_compose_timeout: '%env(int:FFMPEG_COMPOSE_TIMEOUT)%'
+    app.ffmpeg_threads: '%env(int:FFMPEG_THREADS)%'
 
 services:
     _defaults:
@@ -12,26 +45,128 @@ services:
         bind:
             $commandBus: '@messenger.bus.command'
             $queryBus: '@messenger.bus.query'
-
-            string $storageDir: '%kernel.project_dir%/public/storage'
-            string $publicBaseUrl: '%env(resolve:BASE_PUBLIC_URL)%/storage'
-            string $appUrl: '%env(resolve:APP_URL)%'
-
-    Google\Cloud\Storage\StorageClient:
-        arguments:
-            - { projectId: '%env(GCP_PROJECT_ID)%', keyFilePath: '%env(resolve:GOOGLE_APPLICATION_CREDENTIALS)%' }
+            string $workDir: '%app.work_dir%'
 
     App\:
         resource: '../src/'
         exclude:
-            - '../src/DependencyInjection/'
+            # Data, not services. Registering entities, value objects, enums,
+            # messages and DTOs makes the container try to autowire their
+            # constructors, and puts hundreds of ids in it that nothing asks for.
             - '../src/Kernel.php'
+            - '../src/Shared/Application/Health/CheckResult.php'
+            - '../src/Shared/Application/Health/Readiness.php'
+            # Registered twice below, once per directory, with its name and path.
+            - '../src/Shared/Infrastructure/Health/WritableDirectoryCheck.php'
+            # Likewise, once per transport.
+            - '../src/Shared/Infrastructure/Health/TransportCheck.php'
+            - '../src/Shared/Domain/Exception/'
+            - '../src/Shared/Domain/ValueObject/'
+            - '../src/Shared/Infrastructure/Persistence/Doctrine/Entity/'
+            - '../src/Shared/Infrastructure/Process/ProcessResult.php'
+            - '../src/Task/Application/Callback/CallbackDeliveryFailed.php'
+            - '../src/Task/Application/Callback/CallbackRequest.php'
+            - '../src/Task/Application/Callback/NotifyTaskCallback.php'
+            - '../src/Task/Application/Command/CancelVideoTaskCommand.php'
+            - '../src/Task/Application/Command/CreateVideoTaskCommand.php'
+            - '../src/Task/Application/Command/ProcessVideoTaskCommand.php'
+            - '../src/Task/Application/Command/RetryVideoTaskCommand.php'
+            - '../src/Task/Application/DTO/'
+            - '../src/Task/Application/Query/GetVideoTaskQuery.php'
+            - '../src/Task/Application/Query/ListVideoTasksQuery.php'
+            - '../src/Task/Application/ReadModel/TaskListing.php'
+            - '../src/Task/Application/ReadModel/TaskPage.php'
+            # Everything under Domain is data except the render defaults, which
+            # are registered as a service just below.
+            - '../src/Task/Domain/'
+            - '../src/Task/Infrastructure/Persistence/Doctrine/Entity/'
+            - '../src/Task/Infrastructure/Video/FfmpegFailed.php'
+            - '../src/Ui/Http/Exception/'
+            - '../src/Ui/Http/Idempotency/ClaimResult.php'
+            - '../src/Ui/Http/Idempotency/StoredResponse.php'
+            - '../src/Ui/Http/Idempotency/RequestFingerprint.php'
+            - '../src/Ui/Http/Request/'
+            - '../src/Ui/Http/Response/'
 
-    App\Composition\Domain\Port\VideoComposer: '@App\Infrastructure\Composition\Ffmpeg\FfmpegVideoComposer'
-
-    App\Infrastructure\Composition\Ffmpeg\FfmpegVideoComposer:
-        arguments:
-            $workDir: '%app.ffmpeg_work_dir%'
-
-    App\Task\Domain\Port\VideoTaskRepository: '@App\Task\Infrastructure\Persistence\Doctrine\Repository\DoctrineVideoTaskRepository'
+    # Ports -> adapters.
+    App\Shared\Application\Clock\Clock: '@App\Shared\Infrastructure\Clock\SystemClock'
+    App\Shared\Application\Transaction\Transaction: '@App\Shared\Infrastructure\Persistence\Doctrine\DoctrineTransaction'
+    App\Shared\Infrastructure\Process\ProcessRunner: '@App\Shared\Infrastructure\Process\SymfonyProcessRunner'
+    App\Task\Domain\Port\ImageAnimator: '@App\Task\Infrastructure\Video\FfmpegImageAnimator'
+    App\Task\Domain\Port\ImageFetcher: '@App\Task\Infrastructure\Media\ImageDownloader'
     App\Task\Domain\Port\PartialVideoRepository: '@App\Task\Infrastructure\Persistence\Doctrine\Repository\DoctrinePartialVideoRepository'
+    App\Task\Domain\Port\VideoComposer: '@App\Task\Infrastructure\Video\FfmpegVideoComposer'
+    App\Task\Domain\Port\VideoTaskRepository: '@App\Task\Infrastructure\Persistence\Doctrine\Repository\DoctrineVideoTaskRepository'
+    App\Task\Application\ReadModel\VideoTaskReadRepository: '@App\Task\Infrastructure\Persistence\Doctrine\ReadModel\DbalVideoTaskReadRepository'
+    App\Task\Application\Callback\CallbackDelivery: '@App\Task\Infrastructure\Callback\SignedHttpCallbackDelivery'
+    App\Ui\Http\Idempotency\IdempotencyStore: '@App\Shared\Infrastructure\Persistence\Doctrine\Idempotency\DbalIdempotencyStore'
+    App\Task\Infrastructure\Media\TargetPolicy: '@App\Task\Infrastructure\Media\PublicTargetPolicy'
+
+    # The deployment's render defaults, as the value object the domain uses.
+    # A task stores the options it resolved, so changing these later does not
+    # change how an existing task is retried.
+    App\Task\Domain\ValueObject\RenderOptions:
+        arguments:
+            $duration: '%app.render.duration%'
+            $fps: '%app.render.fps%'
+            $resolution: '%app.render.resolution%'
+            $crossfade: '%app.render.crossfade%'
+
+    # Readiness: one check per directory the worker writes into. Both are
+    # Docker volumes, and a volume whose ownership predates the image is how
+    # every render comes to fail at the last step.
+    app.health_check.videos_dir:
+        class: App\Shared\Infrastructure\Health\WritableDirectoryCheck
+        tags: ['app.health_check']
+        arguments:
+            $checkName: 'videos_dir'
+            $directory: '%app.videos_dir%'
+
+    app.health_check.work_dir:
+        class: App\Shared\Infrastructure\Health\WritableDirectoryCheck
+        tags: ['app.health_check']
+        arguments:
+            $checkName: 'work_dir'
+            $directory: '%app.work_dir%'
+
+    # And one per queue. They are configured separately - their own DSN, their
+    # own vhost, their own credentials - so a deployment can have the video
+    # queue reachable and the callback queue not, and probing only the first
+    # said the application was ready while no webhook could be published or
+    # consumed.
+    app.health_check.transport:
+        class: App\Shared\Infrastructure\Health\TransportCheck
+        tags: ['app.health_check']
+        arguments:
+            $checkName: 'transport'
+            $transport: '@messenger.transport.async'
+
+    app.health_check.callbacks_transport:
+        class: App\Shared\Infrastructure\Health\TransportCheck
+        tags: ['app.health_check']
+        arguments:
+            $checkName: 'callbacks_transport'
+            $transport: '@messenger.transport.callbacks'
+
+    # And the one nothing publishes to on purpose. A message that has spent its
+    # retries is parked there instead of being dropped, so a bad
+    # MESSENGER_FAILURE_TRANSPORT_DSN loses exactly the messages somebody was
+    # going to want to look at - silently, while the two transports above are
+    # reachable and the deployment is advertised as ready.
+    app.health_check.failure_transport:
+        class: App\Shared\Infrastructure\Health\TransportCheck
+        tags: ['app.health_check']
+        arguments:
+            $checkName: 'failure_transport'
+            $transport: '@messenger.transport.failed'
+
+    # ffmpeg budgets. One invocation per part, then one for the concatenation.
+    App\Task\Infrastructure\Video\FfmpegImageAnimator:
+        arguments:
+            $timeoutSeconds: '%app.ffmpeg_animate_timeout%'
+            $threads: '%app.ffmpeg_threads%'
+
+    App\Task\Infrastructure\Video\FfmpegVideoComposer:
+        arguments:
+            $timeoutSeconds: '%app.ffmpeg_compose_timeout%'
+            $threads: '%app.ffmpeg_threads%'

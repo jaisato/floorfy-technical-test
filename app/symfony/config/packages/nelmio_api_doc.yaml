@@ -1,0 +1,195 @@
+nelmio_api_doc:
+    documentation:
+        openapi: 3.0.0
+        info:
+            title: 'Floorfy — API de vídeos'
+            description: |
+                Crea tareas que animan imágenes con FFmpeg y concatenan los clips
+                en un vídeo final. El trabajo pesado es asíncrono: la creación
+                responde 201 con un identificador que se consulta después.
+
+                Los errores siguen el mismo contrato en toda la API:
+                `application/problem+json` (RFC 9457).
+            version: '1.0.0'
+
+        # La única entrada de `servers`, y sale de APP_URL como todo lo demás
+        # que nombra esta API hacia fuera. Escrita a mano apuntaba al puerto
+        # 8080 de la máquina de quien *lee* el documento: los clientes
+        # generados y el "Try it out" de Swagger llamaban a su propio equipo en
+        # cualquier despliegue que no fuera el local.
+        servers:
+            - url: '%app.public_base_url%'
+              description: 'La API tal y como la alcanzan los clientes (APP_URL)'
+
+        # Both schemes are alternatives, and the empty requirement is one of
+        # them: with API_TOKENS empty - the default - nothing is needed.
+        security:
+            - {}
+            - bearer: []
+            - apiKey: []
+
+        components:
+            securitySchemes:
+                # Both are optional: with API_TOKENS empty the API is open.
+                bearer:
+                    type: http
+                    scheme: bearer
+                    description: 'Authorization: Bearer <secreto>. Sólo si API_TOKENS está configurado.'
+                apiKey:
+                    type: apiKey
+                    in: header
+                    name: X-API-Key
+                    description: 'Alternativa a Bearer, con el mismo secreto.'
+
+            parameters:
+                taskId:
+                    name: id
+                    in: path
+                    required: true
+                    description: 'Identificador de la tarea (UUID).'
+                    schema: { type: string, format: uuid }
+
+                idempotencyKey:
+                    name: Idempotency-Key
+                    in: header
+                    required: false
+                    description: |
+                        Repetir la petición con la misma clave y el mismo cuerpo
+                        devuelve la respuesta original (con
+                        `Idempotency-Replayed: true`) en vez de crear otra tarea.
+                    schema: { type: string, maxLength: 255 }
+
+            schemas:
+                Problem:
+                    type: object
+                    description: 'Documento de error (RFC 9457).'
+                    required: [type, title, status, detail]
+                    properties:
+                        type: { type: string, example: 'about:blank' }
+                        title: { type: string, example: 'Bad Request' }
+                        status: { type: integer, example: 400 }
+                        detail: { type: string, example: 'La petición no supera la validación.' }
+                        violations:
+                            type: object
+                            description: 'Sólo en errores de validación: campo -> lista de mensajes.'
+                            additionalProperties:
+                                type: array
+                                items: { type: string }
+
+                Progress:
+                    type: object
+                    required: [completed, failed, pending, total, percent]
+                    properties:
+                        completed: { type: integer, example: 1 }
+                        failed: { type: integer, example: 0 }
+                        pending: { type: integer, example: 1 }
+                        total: { type: integer, example: 2 }
+                        percent: { type: integer, example: 50 }
+
+                RenderOptions:
+                    type: object
+                    description: 'Opciones de render. Todas opcionales; los valores por defecto vienen del despliegue.'
+                    properties:
+                        duration: { type: number, format: float, minimum: 1, maximum: 15, example: 3 }
+                        fps: { type: integer, enum: [24, 25, 30], example: 30 }
+                        resolution: { type: string, enum: ['1280x720', '1920x1080'], example: '1280x720' }
+                        crossfade: { type: number, format: float, minimum: 0, maximum: 2, example: 0.5 }
+
+                TaskSummary:
+                    type: object
+                    required: [task_id, status, progress, final_video_url, error, created_at, updated_at]
+                    properties:
+                        task_id: { type: string, format: uuid }
+                        status: { type: string, enum: [pending, processing, completed, failed, canceled] }
+                        progress: { $ref: '#/components/schemas/Progress' }
+                        final_video_url: { type: string, nullable: true }
+                        error: { type: string, nullable: true }
+                        callback_url:
+                            type: string
+                            nullable: true
+                            description: |
+                                El endpoint de callback sin credenciales: sin userinfo y con la
+                                query sustituida por `?…` cuando la había. Una URL de callback es
+                                del cliente y suele llevar un token; esta representación la sirve
+                                cualquiera que pueda listar tareas.
+                            example: 'https://cliente.example/hooks/video?…'
+                        created_at: { type: string, format: date-time }
+                        updated_at: { type: string, format: date-time }
+                        pruned_at:
+                            type: string
+                            format: date-time
+                            nullable: true
+                            description: 'Cuando la retención borró los vídeos de la tarea; explica un final_video_url nulo en una tarea completada.'
+
+                PartialVideo:
+                    type: object
+                    required: [id, image_url, transition, status, video_url, error]
+                    properties:
+                        id: { type: string, format: uuid }
+                        image_url: { type: string }
+                        transition: { type: string, enum: [pan, zoom_in, zoom_out] }
+                        status: { type: string, enum: [pending, completed, failed] }
+                        video_url: { type: string, nullable: true }
+                        error: { type: string, nullable: true }
+
+                Task:
+                    allOf:
+                        - $ref: '#/components/schemas/TaskSummary'
+                        - type: object
+                          required: [partial_videos]
+                          properties:
+                            partial_videos:
+                                type: array
+                                items: { $ref: '#/components/schemas/PartialVideo' }
+
+                TaskPage:
+                    type: object
+                    required: [items, total, page, limit, pages, hasNext]
+                    properties:
+                        items:
+                            type: array
+                            items: { $ref: '#/components/schemas/TaskSummary' }
+                        total: { type: integer, example: 41 }
+                        page: { type: integer, example: 2 }
+                        limit: { type: integer, example: 20 }
+                        pages: { type: integer, example: 3 }
+                        hasNext: { type: boolean, example: true }
+
+            responses:
+                BadRequest:
+                    description: 'La petición no es válida.'
+                    content:
+                        application/problem+json:
+                            schema: { $ref: '#/components/schemas/Problem' }
+                Unauthorized:
+                    description: 'Falta la credencial de API, o no es válida (sólo con API_TOKENS configurado).'
+                    content:
+                        application/problem+json:
+                            schema: { $ref: '#/components/schemas/Problem' }
+                NotFound:
+                    description: 'No existe el recurso.'
+                    content:
+                        application/problem+json:
+                            schema: { $ref: '#/components/schemas/Problem' }
+                Conflict:
+                    description: 'El estado actual del recurso no permite esa operación.'
+                    content:
+                        application/problem+json:
+                            schema: { $ref: '#/components/schemas/Problem' }
+                UnprocessableEntity:
+                    description: 'La Idempotency-Key ya se usó con una petición distinta.'
+                    content:
+                        application/problem+json:
+                            schema: { $ref: '#/components/schemas/Problem' }
+                TooManyRequests:
+                    description: 'Se ha superado el límite de creación de tareas.'
+                    content:
+                        application/problem+json:
+                            schema: { $ref: '#/components/schemas/Problem' }
+
+    areas:
+        default:
+            # Only the JSON API. /health and /videos are documented in the
+            # README; putting them here would suggest they are part of the
+            # contract a client codegenerates against.
+            path_patterns: ['^/api(?!/doc)']

@@ -1,11 +1,13 @@
 monolog:
     channels:
-        - deprecation # Deprecations are logged in the dedicated "deprecation" channel when it exists
+        # "deprecation" is where Symfony sends its own notices; "task" is the
+        # video pipeline's channel, and has to exist in every environment
+        # because the worker asks the container for monolog.logger.task.
+        - deprecation
+        - task
 
 when@dev:
     monolog:
-        channels: [ 'task' ]
-
         handlers:
             main:
                 type: stream

@@ -1,0 +1,35 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Task\Application\Callback;
+
+use App\Shared\Domain\Bus\AsyncCommand;
+
+/**
+ * Tells the task's callback URL that the task reached this status.
+ *
+ * Carried by its own transport, with its own retries: a webhook endpoint that
+ * is down for an hour must not hold up video work, and a video that fails must
+ * not lose the notification of the previous one.
+ */
+final readonly class NotifyTaskCallback implements AsyncCommand
+{
+    public function __construct(
+        public string $taskId,
+        /** The status the task reached: completed, failed or canceled. */
+        public string $event,
+        /**
+         * Which attempt of the task reached it.
+         *
+         * A status is reusable and so is the second `updated_at` records, so
+         * neither says which run this notification is about. The delivery is
+         * recorded against this number, and a task retried and settled again
+         * while the endpoint took its time carries a different one - so the
+         * late delivery of the previous run no longer answers for the one the
+         * client is still owed.
+         */
+        public int $generation,
+    ) {
+    }
+}

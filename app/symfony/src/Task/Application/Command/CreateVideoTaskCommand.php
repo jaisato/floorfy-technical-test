@@ -1,22 +1,25 @@
 <?php
+
 declare(strict_types=1);
 
 namespace App\Task\Application\Command;
 
 use App\Shared\Domain\Bus\Command;
 
-/**
- * @param list<array{url:string, transition:string}> $images
- * @param array<string,mixed> $payload
- */
 final readonly class CreateVideoTaskCommand implements Command
 {
     /**
-     * @param list<array{url:string, transition:string}> $images
-     * @param array<string,mixed> $payload
+     * @param list<array{url: string, transition: string, duration?: float}> $images      already validated
+     *                                                                                    and normalised by the UI layer, in playback order
+     * @param string|null                                                    $callbackUrl where to POST the outcome; validated by the
+     *                                                                                    UI layer against the same rules as the image URLs
+     * @param array<string, mixed>                                           $options     render options the caller chose; anything absent
+     *                                                                                    keeps the deployment's default
      */
     public function __construct(
         public array $images,
-        public array $payload,
-    ) {}
+        public ?string $callbackUrl = null,
+        public array $options = [],
+    ) {
+    }
 }

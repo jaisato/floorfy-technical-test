@@ -1,8 +1,29 @@
+includes:
+    - vendor/phpstan/phpstan-symfony/extension.neon
+    - vendor/phpstan/phpstan-symfony/rules.neon
+    - vendor/phpstan/phpstan-doctrine/extension.neon
+    - vendor/phpstan/phpstan-doctrine/rules.neon
+    - vendor/phpstan/phpstan-phpunit/extension.neon
+    - vendor/phpstan/phpstan-phpunit/rules.neon
+
 parameters:
-    level: 6
+    level: 8
     paths:
         - bin/
         - config/
+        - migrations/
         - public/
         - src/
         - tests/
+    excludePaths:
+        # Auto-generated array-shape reference for config/*.php; not application code.
+        - config/reference.php
+    tmpDir: var/cache/phpstan
+    treatPhpDocTypesAsCertain: false
+    symfony:
+        # Written by `bin/console cache:warmup` (or lint:container). Lets the
+        # extension resolve container services and their types.
+        containerXmlPath: var/cache/test/App_KernelTestDebugContainer.xml
+        consoleApplicationLoader: tests/console-application.php
+    doctrine:
+        objectManagerLoader: tests/object-manager.php

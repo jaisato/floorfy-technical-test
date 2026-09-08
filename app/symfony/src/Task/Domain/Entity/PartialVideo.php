@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace App\Task\Domain\Entity;
@@ -7,28 +8,36 @@ use App\Shared\Domain\ValueObject\DateTimeValue;
 use App\Shared\Domain\ValueObject\UuidValue;
 use App\Task\Domain\Enum\PartialVideoStatus;
 use App\Task\Domain\Enum\Transition;
+use App\Task\Domain\ValueObject\RenderOptions;
 
 final class PartialVideo
 {
     private function __construct(
-        private UuidValue $id,
-        private UuidValue $taskId,
-        private string $imageUrl,
-        private Transition $transition,
+        private readonly UuidValue $id,
+        private readonly UuidValue $taskId,
+        private readonly string $imageUrl,
+        private readonly Transition $transition,
+        /** Playback order inside the task; assigned when the task is created. */
+        private readonly int $position,
+        /** Seconds this clip lasts; null means the task's default. */
+        private readonly ?float $durationSeconds,
         private PartialVideoStatus $status,
         private ?string $videoPath,
         private ?string $errorMessage,
-        private DateTimeValue $createdAt,
+        private readonly DateTimeValue $createdAt,
         private DateTimeValue $updatedAt,
-    ) {}
+    ) {
+    }
 
-    public static function create(UuidValue $taskId, string $imageUrl, Transition $transition, DateTimeValue $now): self
+    public static function create(UuidValue $taskId, string $imageUrl, Transition $transition, int $position, DateTimeValue $now, ?float $durationSeconds = null): self
     {
         return new self(
             UuidValue::new(),
             $taskId,
             $imageUrl,
             $transition,
+            $position,
+            $durationSeconds,
             PartialVideoStatus::PENDING,
             null,
             null,
@@ -42,13 +51,15 @@ final class PartialVideo
         UuidValue $taskId,
         string $imageUrl,
         Transition $transition,
+        int $position,
         PartialVideoStatus $status,
         ?string $videoPath,
         ?string $errorMessage,
         DateTimeValue $createdAt,
         DateTimeValue $updatedAt,
+        ?float $durationSeconds = null,
     ): self {
-        return new self($id, $taskId, $imageUrl, $transition, $status, $videoPath, $errorMessage, $createdAt, $updatedAt);
+        return new self($id, $taskId, $imageUrl, $transition, $position, $durationSeconds, $status, $videoPath, $errorMessage, $createdAt, $updatedAt);
     }
 
     public function id(): UuidValue
@@ -69,6 +80,23 @@ final class PartialVideo
     public function transition(): Transition
     {
         return $this->transition;
+    }
+
+    public function position(): int
+    {
+        return $this->position;
+    }
+
+    /** Null when this clip runs for whatever the task says. */
+    public function durationSeconds(): ?float
+    {
+        return $this->durationSeconds;
+    }
+
+    /** The options this clip is rendered with: the task's, with its own length. */
+    public function renderOptions(RenderOptions $taskOptions): RenderOptions
+    {
+        return null === $this->durationSeconds ? $taskOptions : $taskOptions->withDuration($this->durationSeconds);
     }
 
     public function status(): PartialVideoStatus
@@ -96,10 +124,18 @@ final class PartialVideo
         return $this->updatedAt;
     }
 
+    public function isCompleted(): bool
+    {
+        return PartialVideoStatus::COMPLETED === $this->status;
+    }
+
     public function markCompleted(string $videoPath, DateTimeValue $now): void
     {
         $this->status = PartialVideoStatus::COMPLETED;
         $this->videoPath = $videoPath;
+        // A part that succeeds on a later attempt must not keep advertising why
+        // the previous one failed.
+        $this->errorMessage = null;
         $this->updatedAt = $now;
     }
 
@@ -107,6 +143,50 @@ final class PartialVideo
     {
         $this->status = PartialVideoStatus::FAILED;
         $this->errorMessage = $errorMessage;
+        $this->updatedAt = $now;
+    }
+
+    /**
+     * The clip's file is gone; the part keeps its status and its error.
+     *
+     * The URL goes, because it would point at a file that no longer exists.
+     * The status stays "completed": the part was rendered, and a retry finds no
+     * file and renders it again, which is exactly right.
+     */
+    public function markPruned(DateTimeValue $now): void
+    {
+        $this->videoPath = null;
+        $this->updatedAt = $now;
+    }
+
+    /**
+     * Drops the pointer to a clip that is no longer on disk.
+     * See VideoTask::forgetFinalVideo() - the same partial retention run, and
+     * the same reason updatedAt does not move.
+     */
+    public function forgetVideo(): void
+    {
+        $this->videoPath = null;
+    }
+
+    /**
+     * Puts a failed part back in the queue so the next attempt retries it.
+     *
+     * Without this a single transient download error would pin the part at
+     * "failed" for good, and the task could never complete however many times
+     * the message was redelivered.
+     */
+    public function markPending(DateTimeValue $now): void
+    {
+        $this->status = PartialVideoStatus::PENDING;
+        $this->videoPath = null;
+        // The error belonged to the attempt that just ended, and this part is
+        // now waiting for the next one. Left behind, GET /api/tasks/{id}
+        // reported a pending part alongside the reason a previous attempt
+        // failed, which reads as a part that failed and is somehow still
+        // queued - and outlives the retry that succeeds without going through
+        // markCompleted, such as one whose task is cancelled first.
+        $this->errorMessage = null;
         $this->updatedAt = $now;
     }
 }

@@ -6,3 +6,11 @@ controllers:
 kernel:
     resource: '../src/Kernel.php'
     type: attribute
+
+# The OpenAPI document itself. Public even when API_TOKENS is set: a client
+# cannot be expected to authenticate in order to read the contract.
+api_doc:
+    path: /api/doc.json
+    methods: [GET]
+    defaults:
+        _controller: nelmio_api_doc.controller.swagger

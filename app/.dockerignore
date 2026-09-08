@@ -1,0 +1,15 @@
+# Build context is ./app (see docker-compose.yml). Keep the image free of
+# local state: dependencies are installed inside the build, the runtime
+# directories are Docker volumes, and local env overrides must not be baked in.
+symfony/vendor
+symfony/var
+symfony/public/videos
+symfony/.env.local
+symfony/.env.*.local
+symfony/.phpunit.cache
+symfony/.php-cs-fixer.cache
+symfony/tests
+**/.git
+**/.idea
+**/.vscode
+**/.DS_Store

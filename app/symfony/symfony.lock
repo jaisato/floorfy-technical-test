@@ -47,17 +47,8 @@
             ".php-cs-fixer.dist.php"
         ]
     },
-    "google/apiclient": {
-        "version": "2.18",
-        "recipe": {
-            "repo": "github.com/symfony/recipes-contrib",
-            "branch": "main",
-            "version": "2.10",
-            "ref": "07a97ec434d43b7903c78069a04c92adb6442e52"
-        },
-        "files": [
-            "config/packages/google_apiclient.yaml"
-        ]
+    "nelmio/api-doc-bundle": {
+        "version": "v5.12.0"
     },
     "phpstan/phpstan": {
         "version": "2.1",
@@ -131,15 +122,6 @@
             ".editorconfig"
         ]
     },
-    "symfony/maker-bundle": {
-        "version": "1.65",
-        "recipe": {
-            "repo": "github.com/symfony/recipes",
-            "branch": "main",
-            "version": "1.0",
-            "ref": "fadbfe33303a76e25cb63401050439aa9b1a9c7f"
-        }
-    },
     "symfony/messenger": {
         "version": "7.4",
         "recipe": {
@@ -164,6 +146,18 @@
             "config/packages/monolog.yaml"
         ]
     },
+    "symfony/property-info": {
+        "version": "7.4",
+        "recipe": {
+            "repo": "github.com/symfony/recipes",
+            "branch": "main",
+            "version": "7.3",
+            "ref": "dae70df71978ae9226ae915ffd5fad817f5ca1f7"
+        },
+        "files": [
+            "config/packages/property_info.yaml"
+        ]
+    },
     "symfony/routing": {
         "version": "7.4",
         "recipe": {
@@ -175,6 +169,19 @@
         "files": [
             "config/packages/routing.yaml",
             "config/routes.yaml"
+        ]
+    },
+    "symfony/security-bundle": {
+        "version": "7.4",
+        "recipe": {
+            "repo": "github.com/symfony/recipes",
+            "branch": "main",
+            "version": "7.4",
+            "ref": "c42fee7802181cdd50f61b8622715829f5d2335c"
+        },
+        "files": [
+            "config/packages/security.yaml",
+            "config/routes/security.yaml"
         ]
     },
     "symfony/uid": {
