@@ -8,7 +8,10 @@ use App\Shared\Infrastructure\Persistence\Doctrine\Idempotency\DbalIdempotencySt
 use App\Tests\Support\ApiTestCase;
 use App\Ui\Http\Idempotency\IdempotencyKeyListener;
 use App\Ui\Http\Response\ApiProblem;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Event\RequestEvent;
+use Symfony\Component\HttpKernel\KernelEvents;
 
 /**
  * Idempotency-Key end to end: a client that lost the answer to POST /api/tasks
@@ -160,6 +163,33 @@ final class TaskIdempotencyTest extends ApiTestCase
         $this->assertStatus(Response::HTTP_BAD_REQUEST);
         self::assertSame(0, $this->taskCount());
         self::assertSame(0, $this->keyCount());
+    }
+
+    /**
+     * A request that outlived the store's grace and comes back to a claim a
+     * retry took must not leave a task behind: its own client will never be
+     * told of it, and the retry's already has one. Everything the request
+     * wrote is one unit of work with the storing of its answer, and the answer
+     * cannot be stored, so none of it is kept. The key changes hands here
+     * between the claim and the controller, from a listener slotted between
+     * the two.
+     */
+    public function testARequestWhoseKeyWasTakenOverMidFlightCreatesNoTask(): void
+    {
+        $this->client->disableReboot();
+        $dispatcher = self::getContainer()->get('event_dispatcher');
+        self::assertInstanceOf(EventDispatcherInterface::class, $dispatcher);
+        $dispatcher->addListener(KernelEvents::REQUEST, function (RequestEvent $event): void {
+            if ($event->isMainRequest()) {
+                $this->connection()->executeStatement('UPDATE '.DbalIdempotencyStore::TABLE." SET claim_token = 'the-retry'");
+            }
+        }, 3);
+
+        $this->create('k-1', self::PAYLOAD);
+
+        $this->assertStatus(Response::HTTP_CONFLICT);
+        self::assertSame(ApiProblem::CONTENT_TYPE, $this->client->getResponse()->headers->get('Content-Type'));
+        self::assertSame(0, $this->taskCount(), 'the task was rolled back with the answer nobody could store');
     }
 
     /** The header only means something where the API says it does. */

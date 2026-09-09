@@ -28,8 +28,16 @@ use Doctrine\DBAL\Types\Types;
  * the token its late complete() stored its answer over the retry's, to be
  * replayed to that client as the answer to a request it never made, and its
  * release() deleted a claim that was being worked on.
+ *
+ * And the claim's completion is the last write of the request's own unit of
+ * work, on the same connection: begin() opens a transaction the controller's
+ * changes nest inside (DBAL nests with savepoints), complete() commits it
+ * when the token still matches and rolls it back when it does not. That is
+ * what keeps a request that came back too late from leaving a task behind
+ * that nobody was told about: the task and the message that queues it go
+ * with the answer that could not be stored.
  */
-final readonly class DbalIdempotencyStore implements IdempotencyStore
+final class DbalIdempotencyStore implements IdempotencyStore
 {
     public const string TABLE = 'idempotency_keys';
 
@@ -54,19 +62,27 @@ final readonly class DbalIdempotencyStore implements IdempotencyStore
      * long after nginx gave up on it, and PHP only notices the client has gone
      * when it writes to it, which the controller does at the very end. Such a
      * request comes back to a claim that is no longer its own: its answer is
-     * not stored and its release releases nothing, both refused by the token.
-     * The task it goes on to create is the one thing the token cannot undo -
-     * the client only ever sees the retry's - and it is the exposure every
-     * idempotency scheme has past its lock, no different from a request that
-     * did its work and died between the commit and the storing of its answer.
-     * The alternative was a day of "still running" for a task that, far more
-     * often, was never created at all.
+     * not stored, its release releases nothing, and the task it went on to
+     * create is rolled back with everything else it wrote, because the
+     * storing of the answer is the last write of that same transaction. What
+     * remains is the exposure every idempotency scheme has past its lock: a
+     * request that did its work, committed, and died in the moment before the
+     * response could be stored - which the design closes too, since the two
+     * are one commit. The alternative was a day of "still running" for a task
+     * that, far more often, was never created at all.
      */
     public const int IN_PROGRESS_GRACE_SECONDS = 300;
 
+    /**
+     * The tokens whose unit of work this store opened and has not closed.
+     *
+     * @var array<string, true>
+     */
+    private array $held = [];
+
     public function __construct(
-        private Connection $db,
-        private int $inProgressGraceSeconds = self::IN_PROGRESS_GRACE_SECONDS,
+        private readonly Connection $db,
+        private readonly int $inProgressGraceSeconds = self::IN_PROGRESS_GRACE_SECONDS,
     ) {
     }
 
@@ -122,17 +138,40 @@ final readonly class DbalIdempotencyStore implements IdempotencyStore
         ));
     }
 
+    public function begin(string $scope, string $key, string $token): void
+    {
+        $this->db->beginTransaction();
+        $this->held[$token] = true;
+    }
+
     public function complete(string $scope, string $key, string $token, StoredResponse $response): bool
     {
-        return 1 === (int) $this->db->update(self::TABLE, [
+        $stored = 1 === (int) $this->db->update(self::TABLE, [
             'response_status' => $response->status,
             'response_content_type' => $response->contentType,
             'response_body' => $response->body,
         ], ['scope' => $scope, 'idempotency_key' => $key, 'claim_token' => $token]);
+
+        if ($this->closes($token)) {
+            // The last write of the unit of work, and the one that decides it:
+            // the claim is still this attempt's and everything the request did
+            // is kept, or it is not and none of it is.
+            if ($stored) {
+                $this->db->commit();
+            } else {
+                $this->db->rollBack();
+            }
+        }
+
+        return $stored;
     }
 
     public function release(string $scope, string $key, string $token): void
     {
+        if ($this->closes($token)) {
+            $this->db->rollBack();
+        }
+
         $this->db->delete(self::TABLE, ['scope' => $scope, 'idempotency_key' => $key, 'claim_token' => $token]);
     }
 
@@ -149,6 +188,21 @@ final readonly class DbalIdempotencyStore implements IdempotencyStore
             ['now' => $now->toDateTimeImmutable()],
             ['now' => Types::DATETIME_IMMUTABLE],
         );
+    }
+
+    /**
+     * Whether a unit of work begin() opened for the token is still open, and
+     * forgets it either way: it is closed by the call that asked.
+     */
+    private function closes(string $token): bool
+    {
+        if (!isset($this->held[$token])) {
+            return false;
+        }
+
+        unset($this->held[$token]);
+
+        return $this->db->isTransactionActive();
     }
 
     /**

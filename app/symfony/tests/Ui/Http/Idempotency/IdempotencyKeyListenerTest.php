@@ -11,10 +11,12 @@ use App\Ui\Http\Idempotency\IdempotencyKeyListener;
 use App\Ui\Http\Idempotency\RequestFingerprint;
 use App\Ui\Http\Idempotency\StoredResponse;
 use App\Ui\Http\RequestActor;
+use App\Ui\Http\Response\ApiProblem;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Event\FinishRequestEvent;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
 use Symfony\Component\HttpKernel\Event\ResponseEvent;
 use Symfony\Component\HttpKernel\HttpKernelInterface;
@@ -70,6 +72,7 @@ final class IdempotencyKeyListenerTest extends TestCase
 
         self::assertNull($event->getResponse());
         self::assertArrayHasKey('anonymous/k-1', $this->store->records);
+        self::assertSame(['anonymous/k-1/token-1'], $this->store->began, 'the unit of work opens with the claim');
     }
 
     public function testTheResponseOfAClaimedKeyIsStored(): void
@@ -182,9 +185,13 @@ final class IdempotencyKeyListenerTest extends TestCase
         $this->listener->onRequest($this->request($request));
         $this->store->takeOver('anonymous', 'k-1');
 
-        $this->listener->onResponse($this->response($request, new Response('{"task_id":"late"}', Response::HTTP_CREATED)));
+        $event = $this->response($request, new Response('{"task_id":"late"}', Response::HTTP_CREATED));
+        $this->listener->onResponse($event);
 
         self::assertNull($this->store->records['anonymous/k-1']['response']);
+        // And the client is not told of a task the store rolled back.
+        self::assertSame(Response::HTTP_CONFLICT, $event->getResponse()->getStatusCode());
+        self::assertSame(ApiProblem::CONTENT_TYPE, $event->getResponse()->headers->get('Content-Type'));
     }
 
     public function testAFailureOfAnAttemptThatWasTakenOverReleasesNothing(): void
@@ -197,6 +204,34 @@ final class IdempotencyKeyListenerTest extends TestCase
 
         self::assertSame([], $this->store->released);
         self::assertArrayHasKey('anonymous/k-1', $this->store->records);
+    }
+
+    /**
+     * A request that ends without any response - an exception the kernel was
+     * told not to catch - answered nothing: the key goes back when the request
+     * finishes, and the client's retry runs for real.
+     */
+    public function testARequestThatEndsWithoutAResponseGivesTheKeyBack(): void
+    {
+        $request = self::post('{"a":1}', key: 'k-1');
+        $this->listener->onRequest($this->request($request));
+
+        $this->listener->onFinishRequest($this->finish($request));
+
+        self::assertSame(['anonymous/k-1'], $this->store->released);
+    }
+
+    /** And one that did answer is left alone when it finishes. */
+    public function testAnAnsweredRequestIsLeftAloneWhenItFinishes(): void
+    {
+        $request = self::post('{"a":1}', key: 'k-1');
+        $this->listener->onRequest($this->request($request));
+        $this->listener->onResponse($this->response($request, new Response('{}', Response::HTTP_CREATED)));
+
+        $this->listener->onFinishRequest($this->finish($request));
+
+        self::assertSame([], $this->store->released);
+        self::assertInstanceOf(StoredResponse::class, $this->store->records['anonymous/k-1']['response']);
     }
 
     /**
@@ -256,6 +291,11 @@ final class IdempotencyKeyListenerTest extends TestCase
     private function response(Request $request, Response $response): ResponseEvent
     {
         return new ResponseEvent(self::kernel(), $request, HttpKernelInterface::MAIN_REQUEST, $response);
+    }
+
+    private function finish(Request $request): FinishRequestEvent
+    {
+        return new FinishRequestEvent(self::kernel(), $request, HttpKernelInterface::MAIN_REQUEST);
     }
 
     private static function kernel(): HttpKernelInterface

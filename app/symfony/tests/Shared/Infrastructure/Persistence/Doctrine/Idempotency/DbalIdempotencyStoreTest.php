@@ -146,6 +146,57 @@ final class DbalIdempotencyStoreTest extends DatabaseTestCase
         self::assertSame('{"task_id":"retry"}', $replay->response?->body);
     }
 
+    /**
+     * begin() opens the unit of work the request's changes belong to, and
+     * complete() is its last write: with the claim still this attempt's,
+     * everything commits together.
+     */
+    public function testTheUnitOfWorkCommitsWithTheAnswer(): void
+    {
+        $token = $this->claimToken('anonymous', 'k-1', 'fp', $this->now);
+        $this->store->begin('anonymous', 'k-1', $token);
+        // What the request wrote meanwhile: another row will do.
+        $this->store->claim('anonymous', 'work', 'fp', $this->now, self::TTL);
+
+        self::assertTrue($this->store->complete('anonymous', 'k-1', $token, new StoredResponse(201, 'application/json', '{}')));
+
+        self::assertFalse($this->connection()->isTransactionActive());
+        self::assertSame(2, $this->rowCount(), 'the work committed with the answer');
+    }
+
+    /**
+     * With the key taken over meanwhile, nothing commits: the retry's client
+     * must never be replayed an answer to somebody else's request, and no task
+     * may exist that nobody was told about. The retry takes the key over on
+     * its own connection in real life; here, on the same one, its update is
+     * part of what rolls back, which changes nothing about what is checked.
+     */
+    public function testTheUnitOfWorkOfAnAttemptThatWasTakenOverIsRolledBack(): void
+    {
+        $abandoned = $this->claimToken('anonymous', 'k-1', 'fp', $this->now);
+        $this->store->begin('anonymous', 'k-1', $abandoned);
+        $this->store->claim('anonymous', 'work', 'fp', $this->now, self::TTL);
+        $this->claimToken('anonymous', 'k-1', 'fp', $this->now->minusSeconds(-DbalIdempotencyStore::IN_PROGRESS_GRACE_SECONDS));
+
+        self::assertFalse($this->store->complete('anonymous', 'k-1', $abandoned, new StoredResponse(201, 'application/json', '{}')));
+
+        self::assertFalse($this->connection()->isTransactionActive());
+        self::assertSame(1, $this->rowCount(), 'the work of the attempt that lost its key is gone');
+    }
+
+    /** A release discards the unit of work along with the claim. */
+    public function testAReleaseDiscardsTheUnitOfWork(): void
+    {
+        $token = $this->claimToken('anonymous', 'k-1', 'fp', $this->now);
+        $this->store->begin('anonymous', 'k-1', $token);
+        $this->store->claim('anonymous', 'work', 'fp', $this->now, self::TTL);
+
+        $this->store->release('anonymous', 'k-1', $token);
+
+        self::assertFalse($this->connection()->isTransactionActive());
+        self::assertSame(0, $this->rowCount());
+    }
+
     /** A key names one request, dead or alive: another body under it is still a mismatch. */
     public function testAnAbandonedClaimStillRefusesAnotherRequest(): void
     {

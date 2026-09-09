@@ -17,7 +17,15 @@ final class InMemoryIdempotencyStore implements IdempotencyStore
     /** @var list<string> */
     public array $released = [];
 
+    /** @var list<string> */
+    public array $began = [];
+
     private int $tokens = 0;
+
+    public function begin(string $scope, string $key, string $token): void
+    {
+        $this->began[] = $scope.'/'.$key.'/'.$token;
+    }
 
     public function claim(string $scope, string $key, string $fingerprint, DateTimeValue $now, int $ttlSeconds): ClaimResult
     {

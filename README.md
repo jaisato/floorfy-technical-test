@@ -291,10 +291,15 @@ Detalles que conviene conocer:
   bloqueada en una llamada al sistema (un resolutor que no contesta, una base
   de datos que no contesta) sigue ahí mucho después de que nginx se rindiera. Si
   vuelve, encuentra una reclamación que ya no es suya: su respuesta no se guarda
-  (el cliente sólo verá la del reintento) y su liberación no libera nada; queda
-  un aviso en el log. La tarea que haya llegado a crear es lo único que el token
-  no deshace, la misma exposición de cualquier esquema de idempotencia pasado su
-  cerrojo.
+  (el cliente sólo verá la del reintento), su liberación no libera nada y
+  recibe un `409`; queda un aviso en el log.
+- Todo lo que la petición escribe -la tarea y el mensaje que la encola- forma
+  **una sola unidad de trabajo** con el guardado de su respuesta, que es la
+  última escritura y va condicionada al token: si la clave cambió de manos, el
+  trabajo se deshace con la respuesta que no pudo guardar y no queda ninguna
+  tarea de la que nadie supiera. Es lo que la sustitución por sí sola no
+  cubría, y cierra también el hueco clásico entre confirmar el trabajo y
+  guardar la respuesta, porque son un mismo `COMMIT`.
 
 ### `GET /api/tasks`
 
