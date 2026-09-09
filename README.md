@@ -626,6 +626,7 @@ que está en `.gitignore`.
 | `DEFAULT_URI` | base para generar URLs fuera de una petición HTTP |
 | `API_TOKENS` | claves de API `nombre:secreto,…`; **vacío = API abierta** (por defecto) |
 | `RATE_LIMIT_TASK_CREATION` | tareas por minuto y llamante; `0` = sin límite (por defecto) |
+| `SYMFONY_TRUSTED_PROXIES` | direcciones (IPs, rangos CIDR, `private_ranges`, `REMOTE_ADDR`) de los proxies inversos cuyas cabeceras `X-Forwarded-For` / `-Proto` / `-Port` se creen; vacío = se ignoran (por defecto). Detrás de un balanceador que termina TLS hace falta: sin ella el límite de creación cuenta a todos los clientes como la IP del proxy y las cabeceras `Link` de los listados salen con `http://`. El stack de compose no la necesita (nginx habla FastCGI y pasa la IP real). `SYMFONY_TRUSTED_HEADERS` añade `x-forwarded-host` / `x-forwarded-prefix` |
 | `RENDER_DEFAULT_DURATION`, `RENDER_DEFAULT_FPS`, `RENDER_DEFAULT_RESOLUTION`, `RENDER_DEFAULT_CROSSFADE` | valores por defecto de las [opciones de render](#opciones-de-render) |
 | `VIDEO_URL_SECRET` | clave HMAC de las URLs firmadas de `/videos/`; vacío = sin firmar |
 | `VIDEO_URL_TTL_SECONDS` | validez de una URL firmada (1 h por defecto) |
