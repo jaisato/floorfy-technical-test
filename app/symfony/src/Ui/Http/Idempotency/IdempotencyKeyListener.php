@@ -28,7 +28,10 @@ use Symfony\Component\HttpKernel\KernelEvents;
  *   - identical request, same key: the stored response is replayed, marked
  *     with Idempotency-Replayed: true;
  *   - different request, same key: 422 - a key names one request only;
- *   - same key while the first request is still running: 409.
+ *   - same key while the first request is still running: 409. A request that
+ *     died without answering looks the same, and is told apart by its age:
+ *     past the store's grace the key is taken over and the retry runs for
+ *     real, rather than being refused until the key's TTL.
  *
  * Keys are scoped per caller so two clients cannot collide, and expire after
  * the configured TTL.

@@ -48,6 +48,59 @@ final class DbalIdempotencyStoreTest extends DatabaseTestCase
         self::assertSame(ClaimOutcome::IN_PROGRESS, $this->store->claim('anonymous', 'k-1', 'fp', $this->now, self::TTL)->outcome);
     }
 
+    /**
+     * A claim is released by the response that ends its request, and a request
+     * that never ends - killed at max_execution_time, out of memory, the
+     * container replaced under it - releases nothing. Left there, the row stood
+     * until its TTL, a day by default, and the client that followed the
+     * protocol and repeated its request was told "still running" for the whole
+     * of that day. No request runs anything like the grace, so a claim that old
+     * with nothing stored is not a request still running: the retry takes it.
+     */
+    public function testAClaimNobodyAnsweredIsTakenOverOnceTheGraceHasPassed(): void
+    {
+        $this->store->claim('anonymous', 'k-1', 'fp', $this->now, self::TTL);
+
+        $afterGrace = $this->now->minusSeconds(-DbalIdempotencyStore::IN_PROGRESS_GRACE_SECONDS);
+
+        self::assertSame(ClaimOutcome::CLAIMED, $this->store->claim('anonymous', 'k-1', 'fp', $afterGrace, self::TTL)->outcome);
+        self::assertSame(1, $this->rowCount(), 'the abandoned claim is replaced, not joined');
+    }
+
+    /** Inside the grace the request may well still be running. */
+    public function testAClaimStillInsideTheGraceIsInProgress(): void
+    {
+        $this->store->claim('anonymous', 'k-1', 'fp', $this->now, self::TTL);
+
+        $justBefore = $this->now->minusSeconds(-(DbalIdempotencyStore::IN_PROGRESS_GRACE_SECONDS - 1));
+
+        self::assertSame(ClaimOutcome::IN_PROGRESS, $this->store->claim('anonymous', 'k-1', 'fp', $justBefore, self::TTL)->outcome);
+    }
+
+    /** The take-over is a claim of its own: it expires from its moment, not the dead one's. */
+    public function testTheClaimThatTookOverExpiresFromItsOwnMoment(): void
+    {
+        $this->store->claim('anonymous', 'k-1', 'fp', $this->now, self::TTL);
+        $afterGrace = $this->now->minusSeconds(-DbalIdempotencyStore::IN_PROGRESS_GRACE_SECONDS);
+        $this->store->claim('anonymous', 'k-1', 'fp', $afterGrace, self::TTL);
+        $this->store->complete('anonymous', 'k-1', new StoredResponse(201, 'application/json', '{}'));
+
+        // Past the first claim's TTL, inside the second's.
+        $later = $afterGrace->minusSeconds(-(self::TTL - 1));
+
+        self::assertSame(ClaimOutcome::REPLAY, $this->store->claim('anonymous', 'k-1', 'fp', $later, self::TTL)->outcome);
+    }
+
+    /** A key names one request, dead or alive: another body under it is still a mismatch. */
+    public function testAnAbandonedClaimStillRefusesAnotherRequest(): void
+    {
+        $this->store->claim('anonymous', 'k-1', 'fp', $this->now, self::TTL);
+
+        $afterGrace = $this->now->minusSeconds(-DbalIdempotencyStore::IN_PROGRESS_GRACE_SECONDS);
+
+        self::assertSame(ClaimOutcome::MISMATCH, $this->store->claim('anonymous', 'k-1', 'other', $afterGrace, self::TTL)->outcome);
+    }
+
     public function testAnAnsweredKeyReplaysItsAnswer(): void
     {
         $this->store->claim('anonymous', 'k-1', 'fp', $this->now, self::TTL);

@@ -251,6 +251,7 @@ es seguro:
 | **Misma clave, mismo cuerpo** | la **misma respuesta guardada**, con `Idempotency-Replayed: true`; no se crea nada |
 | Misma clave, **cuerpo distinto** | **422**: una clave nombra una sola petición |
 | Misma clave mientras la primera petición **sigue en curso** | **409** |
+| Misma clave cuando la primera petición **murió sin responder** (más de 5 min sin respuesta guardada) | se ejecuta **de verdad**: la reclamación abandonada se sustituye |
 | Clave vacía, demasiado larga o con caracteres no imprimibles | **400** |
 
 Detalles que conviene conocer:
@@ -274,6 +275,15 @@ Detalles que conviene conocer:
 - La reclamación es un `INSERT` sobre la clave primaria `(scope, key)`: dos
   peticiones simultáneas compiten en la base de datos y sólo una gana. No hay
   ningún «leer y luego escribir» que pueda cruzarse.
+- Una reclamación la libera la respuesta que cierra su petición, y una petición
+  que muere sin responder (php-fpm la para en `max_execution_time`, se queda sin
+  memoria, el contenedor se reemplaza debajo) no libera nada. Para que el
+  reintento del cliente no reciba `409` durante todo el TTL por una tarea que
+  nunca se creó, una reclamación **sin respuesta durante más de 5 minutos**
+  (`DbalIdempotencyStore::IN_PROGRESS_GRACE_SECONDS`; ninguna petición dura ni
+  de lejos tanto: php-fpm corta a los 60 s y nginx deja de esperar a los 30 s)
+  se considera abandonada y el siguiente reintento la sustituye y se ejecuta de
+  verdad. Un cuerpo distinto bajo esa clave sigue siendo un `422`.
 
 ### `GET /api/tasks`
 
