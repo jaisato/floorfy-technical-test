@@ -33,6 +33,23 @@ final class ApiTokensTest extends TestCase
         self::assertSame('batch', $tokens->clientFor('another-long-secret'));
     }
 
+    /**
+     * A secret made only of digits is stored under an integer array key - PHP
+     * converts such a string key on assignment - and hash_equals() takes
+     * strings only, so comparing the key as it came back threw a TypeError on
+     * every request: one numeric secret in API_TOKENS took authentication down
+     * for the whole deployment, a 500 in place of the 401 or the 200.
+     */
+    public function testASecretMadeOfDigitsOnlyIsASecret(): void
+    {
+        $tokens = new ApiTokens('web:1234567890123456,batch:secret-of-sixteen');
+
+        self::assertSame('web', $tokens->clientFor('1234567890123456'));
+        self::assertSame('batch', $tokens->clientFor('secret-of-sixteen'), 'the entry after it is still compared');
+        self::assertNull($tokens->clientFor('123456789012345'), 'a prefix of it is not');
+        self::assertNull($tokens->clientFor('01234567890123456'), 'nor a spelling with the same numeric value');
+    }
+
     public function testAnUnknownSecretResolvesToNobody(): void
     {
         self::assertNull(new ApiTokens('web:secret-of-sixteen')->clientFor('secret-of-sixteem'));
