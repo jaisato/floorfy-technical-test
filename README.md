@@ -282,8 +282,19 @@ Detalles que conviene conocer:
   nunca se creó, una reclamación **sin respuesta durante más de 5 minutos**
   (`DbalIdempotencyStore::IN_PROGRESS_GRACE_SECONDS`; ninguna petición dura ni
   de lejos tanto: php-fpm corta a los 60 s y nginx deja de esperar a los 30 s)
-  se considera abandonada y el siguiente reintento la sustituye y se ejecuta de
+  se considera abandonada y el siguiente reintento la retoma y se ejecuta de
   verdad. Un cuerpo distinto bajo esa clave sigue siendo un `422`.
+- Cada reclamación lleva un **token** que nombra ese intento
+  (`idempotency_keys.claim_token`), y las dos escrituras que cierran una
+  petición lo devuelven. Una petición «abandonada» no siempre está muerta:
+  `max_execution_time` cuenta tiempo de CPU y no una espera, así que una
+  bloqueada en una llamada al sistema (un resolutor que no contesta, una base
+  de datos que no contesta) sigue ahí mucho después de que nginx se rindiera. Si
+  vuelve, encuentra una reclamación que ya no es suya: su respuesta no se guarda
+  (el cliente sólo verá la del reintento) y su liberación no libera nada; queda
+  un aviso en el log. La tarea que haya llegado a crear es lo único que el token
+  no deshace, la misma exposición de cualquier esquema de idempotencia pasado su
+  cerrojo.
 
 ### `GET /api/tasks`
 

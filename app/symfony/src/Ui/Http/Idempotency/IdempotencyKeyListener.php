@@ -7,6 +7,8 @@ namespace App\Ui\Http\Idempotency;
 use App\Shared\Application\Clock\Clock;
 use App\Ui\Http\Exception\HttpProblem;
 use App\Ui\Http\RequestActor;
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\HttpFoundation\Request;
@@ -31,7 +33,9 @@ use Symfony\Component\HttpKernel\KernelEvents;
  *   - same key while the first request is still running: 409. A request that
  *     died without answering looks the same, and is told apart by its age:
  *     past the store's grace the key is taken over and the retry runs for
- *     real, rather than being refused until the key's TTL.
+ *     real, rather than being refused until the key's TTL. Should the first
+ *     request turn out to be alive after all and come back to answer, it
+ *     finds a claim that is no longer its own, and stores nothing.
  *
  * Keys are scoped per caller so two clients cannot collide, and expire after
  * the configured TTL.
@@ -53,6 +57,7 @@ final readonly class IdempotencyKeyListener
         private Clock $clock,
         #[Autowire(param: 'app.idempotency_ttl_seconds')]
         private int $ttlSeconds,
+        private LoggerInterface $logger = new NullLogger(),
     ) {
     }
 
@@ -90,7 +95,7 @@ final readonly class IdempotencyKeyListener
 
         switch ($result->outcome) {
             case ClaimOutcome::CLAIMED:
-                $request->attributes->set(self::ATTRIBUTE, [$scope, $key]);
+                $request->attributes->set(self::ATTRIBUTE, [$scope, $key, $result->token]);
 
                 return;
 
@@ -124,20 +129,32 @@ final readonly class IdempotencyKeyListener
 
         $claim = $event->getRequest()->attributes->get(self::ATTRIBUTE);
 
-        if (!\is_array($claim) || 2 !== \count($claim) || !\is_string($claim[0]) || !\is_string($claim[1])) {
+        if (!\is_array($claim) || 3 !== \count($claim) || !\is_string($claim[0]) || !\is_string($claim[1]) || !\is_string($claim[2])) {
             return;
         }
 
-        [$scope, $key] = $claim;
+        [$scope, $key, $token] = $claim;
         $response = $event->getResponse();
 
         if (self::isRetryable($response->getStatusCode())) {
-            $this->store->release($scope, $key);
+            $this->store->release($scope, $key, $token);
 
             return;
         }
 
-        $this->store->complete($scope, $key, StoredResponse::fromResponse($response));
+        if (!$this->store->complete($scope, $key, $token, StoredResponse::fromResponse($response))) {
+            // This request outlived the store's grace and the client's retry
+            // took its key: the client has the retry's answer, or will, and
+            // this one answers nothing it can still ask. What this request
+            // created, if anything, is a duplicate the client is never told
+            // of - the exposure DbalIdempotencyStore::IN_PROGRESS_GRACE_SECONDS
+            // describes - and this line is where to find it.
+            $this->logger->warning('Idempotency-Key claim was taken over before this response could be stored; the retry that took it answers the client.', [
+                'scope' => $scope,
+                'key' => $key,
+                'status' => $response->getStatusCode(),
+            ]);
+        }
     }
 
     private static function isIdempotentRoute(Request $request): bool

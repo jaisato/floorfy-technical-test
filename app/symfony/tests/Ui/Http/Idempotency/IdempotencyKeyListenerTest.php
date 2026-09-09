@@ -171,6 +171,35 @@ final class IdempotencyKeyListenerTest extends TestCase
     }
 
     /**
+     * A request that outlived the store's grace comes back to a claim that is
+     * no longer its own - the client's retry took it - and however late, its
+     * answer must not be stored over the retry's, nor its failure release the
+     * retry's key.
+     */
+    public function testAnAnswerFromAnAttemptThatWasTakenOverIsNotStored(): void
+    {
+        $request = self::post('{"a":1}', key: 'k-1');
+        $this->listener->onRequest($this->request($request));
+        $this->store->takeOver('anonymous', 'k-1');
+
+        $this->listener->onResponse($this->response($request, new Response('{"task_id":"late"}', Response::HTTP_CREATED)));
+
+        self::assertNull($this->store->records['anonymous/k-1']['response']);
+    }
+
+    public function testAFailureOfAnAttemptThatWasTakenOverReleasesNothing(): void
+    {
+        $request = self::post('{"a":1}', key: 'k-1');
+        $this->listener->onRequest($this->request($request));
+        $this->store->takeOver('anonymous', 'k-1');
+
+        $this->listener->onResponse($this->response($request, new Response('{}', Response::HTTP_INTERNAL_SERVER_ERROR)));
+
+        self::assertSame([], $this->store->released);
+        self::assertArrayHasKey('anonymous/k-1', $this->store->records);
+    }
+
+    /**
      * @return iterable<string, array{string}>
      */
     public static function unusableKeys(): iterable

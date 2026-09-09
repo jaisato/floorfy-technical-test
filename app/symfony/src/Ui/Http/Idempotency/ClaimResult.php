@@ -12,26 +12,32 @@ final readonly class ClaimResult
     private function __construct(
         public ClaimOutcome $outcome,
         public ?StoredResponse $response,
+        /**
+         * Names the attempt that holds the claim; only a CLAIMED result has
+         * one. The writes that end the request hand it back, and a claim
+         * that changed hands in the meantime refuses them.
+         */
+        public ?string $token,
     ) {
     }
 
-    public static function claimed(): self
+    public static function claimed(string $token): self
     {
-        return new self(ClaimOutcome::CLAIMED, null);
+        return new self(ClaimOutcome::CLAIMED, null, $token);
     }
 
     public static function replay(StoredResponse $response): self
     {
-        return new self(ClaimOutcome::REPLAY, $response);
+        return new self(ClaimOutcome::REPLAY, $response, null);
     }
 
     public static function mismatch(): self
     {
-        return new self(ClaimOutcome::MISMATCH, null);
+        return new self(ClaimOutcome::MISMATCH, null, null);
     }
 
     public static function inProgress(): self
     {
-        return new self(ClaimOutcome::IN_PROGRESS, null);
+        return new self(ClaimOutcome::IN_PROGRESS, null, null);
     }
 }
