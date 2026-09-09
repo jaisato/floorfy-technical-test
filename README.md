@@ -251,6 +251,7 @@ es seguro:
 | **Misma clave, mismo cuerpo** | la **misma respuesta guardada**, con `Idempotency-Replayed: true`; no se crea nada |
 | Misma clave, **cuerpo distinto** | **422**: una clave nombra una sola petición |
 | Misma clave mientras la primera petición **sigue en curso** | **409** |
+| Misma clave cuando la primera petición **murió sin responder** (más de 5 min sin respuesta guardada) | se ejecuta **de verdad**: la reclamación abandonada se sustituye |
 | Clave vacía, demasiado larga o con caracteres no imprimibles | **400** |
 
 Detalles que conviene conocer:
@@ -274,6 +275,31 @@ Detalles que conviene conocer:
 - La reclamación es un `INSERT` sobre la clave primaria `(scope, key)`: dos
   peticiones simultáneas compiten en la base de datos y sólo una gana. No hay
   ningún «leer y luego escribir» que pueda cruzarse.
+- Una reclamación la libera la respuesta que cierra su petición, y una petición
+  que muere sin responder (php-fpm la para en `max_execution_time`, se queda sin
+  memoria, el contenedor se reemplaza debajo) no libera nada. Para que el
+  reintento del cliente no reciba `409` durante todo el TTL por una tarea que
+  nunca se creó, una reclamación **sin respuesta durante más de 5 minutos**
+  (`DbalIdempotencyStore::IN_PROGRESS_GRACE_SECONDS`; ninguna petición dura ni
+  de lejos tanto: php-fpm corta a los 60 s y nginx deja de esperar a los 30 s)
+  se considera abandonada y el siguiente reintento la retoma y se ejecuta de
+  verdad. Un cuerpo distinto bajo esa clave sigue siendo un `422`.
+- Cada reclamación lleva un **token** que nombra ese intento
+  (`idempotency_keys.claim_token`), y las dos escrituras que cierran una
+  petición lo devuelven. Una petición «abandonada» no siempre está muerta:
+  `max_execution_time` cuenta tiempo de CPU y no una espera, así que una
+  bloqueada en una llamada al sistema (un resolutor que no contesta, una base
+  de datos que no contesta) sigue ahí mucho después de que nginx se rindiera. Si
+  vuelve, encuentra una reclamación que ya no es suya: su respuesta no se guarda
+  (el cliente sólo verá la del reintento), su liberación no libera nada y
+  recibe un `409`; queda un aviso en el log.
+- Todo lo que la petición escribe -la tarea y el mensaje que la encola- forma
+  **una sola unidad de trabajo** con el guardado de su respuesta, que es la
+  última escritura y va condicionada al token: si la clave cambió de manos, el
+  trabajo se deshace con la respuesta que no pudo guardar y no queda ninguna
+  tarea de la que nadie supiera. Es lo que la sustitución por sí sola no
+  cubría, y cierra también el hueco clásico entre confirmar el trabajo y
+  guardar la respuesta, porque son un mismo `COMMIT`.
 
 ### `GET /api/tasks`
 
@@ -616,6 +642,7 @@ que está en `.gitignore`.
 | `DEFAULT_URI` | base para generar URLs fuera de una petición HTTP |
 | `API_TOKENS` | claves de API `nombre:secreto,…`; **vacío = API abierta** (por defecto) |
 | `RATE_LIMIT_TASK_CREATION` | tareas por minuto y llamante; `0` = sin límite (por defecto) |
+| `SYMFONY_TRUSTED_PROXIES` | direcciones (IPs, rangos CIDR, `private_ranges`, `REMOTE_ADDR`) de los proxies inversos cuyas cabeceras `X-Forwarded-For` / `-Proto` / `-Port` se creen; vacío = se ignoran (por defecto). Detrás de un balanceador que termina TLS hace falta: sin ella el límite de creación cuenta a todos los clientes como la IP del proxy y las cabeceras `Link` de los listados salen con `http://`. El stack de compose no la necesita (nginx habla FastCGI y pasa la IP real). `SYMFONY_TRUSTED_HEADERS` añade `x-forwarded-host` / `x-forwarded-prefix` |
 | `RENDER_DEFAULT_DURATION`, `RENDER_DEFAULT_FPS`, `RENDER_DEFAULT_RESOLUTION`, `RENDER_DEFAULT_CROSSFADE` | valores por defecto de las [opciones de render](#opciones-de-render) |
 | `VIDEO_URL_SECRET` | clave HMAC de las URLs firmadas de `/videos/`; vacío = sin firmar |
 | `VIDEO_URL_TTL_SECONDS` | validez de una URL firmada (1 h por defecto) |

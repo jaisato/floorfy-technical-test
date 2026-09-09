@@ -46,8 +46,13 @@ final readonly class ApiTokens
         // A comparison that takes the same time whatever the secret is: the
         // obvious `$map[$secret] ?? null` leaks nothing here (hash lookup), but
         // this keeps that true if the store ever stops being an array.
+        //
+        // The key comes back as an int when the secret is made of digits only
+        // (PHP converts such a string key on assignment), and hash_equals()
+        // takes strings: without the cast one numeric secret in API_TOKENS was
+        // a TypeError on every request.
         foreach ($this->clientsBySecret as $known => $client) {
-            if (hash_equals($known, $secret)) {
+            if (hash_equals((string) $known, $secret)) {
                 return $client;
             }
         }

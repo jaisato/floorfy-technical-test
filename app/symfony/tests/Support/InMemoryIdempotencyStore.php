@@ -11,11 +11,21 @@ use App\Ui\Http\Idempotency\StoredResponse;
 
 final class InMemoryIdempotencyStore implements IdempotencyStore
 {
-    /** @var array<string, array{fingerprint: string, response: StoredResponse|null, expiresAt: int}> */
+    /** @var array<string, array{fingerprint: string, token: string, response: StoredResponse|null, expiresAt: int}> */
     public array $records = [];
 
     /** @var list<string> */
     public array $released = [];
+
+    /** @var list<string> */
+    public array $began = [];
+
+    private int $tokens = 0;
+
+    public function begin(string $scope, string $key, string $token): void
+    {
+        $this->began[] = $scope.'/'.$key.'/'.$token;
+    }
 
     public function claim(string $scope, string $key, string $fingerprint, DateTimeValue $now, int $ttlSeconds): ClaimResult
     {
@@ -28,13 +38,15 @@ final class InMemoryIdempotencyStore implements IdempotencyStore
         }
 
         if (null === $record) {
+            $token = 'token-'.++$this->tokens;
             $this->records[$id] = [
                 'fingerprint' => $fingerprint,
+                'token' => $token,
                 'response' => null,
                 'expiresAt' => $now->toDateTimeImmutable()->getTimestamp() + $ttlSeconds,
             ];
 
-            return ClaimResult::claimed();
+            return ClaimResult::claimed($token);
         }
 
         if ($record['fingerprint'] !== $fingerprint) {
@@ -44,14 +56,38 @@ final class InMemoryIdempotencyStore implements IdempotencyStore
         return null === $record['response'] ? ClaimResult::inProgress() : ClaimResult::replay($record['response']);
     }
 
-    public function complete(string $scope, string $key, StoredResponse $response): void
+    public function complete(string $scope, string $key, string $token, StoredResponse $response): bool
     {
-        $this->records[$scope.'/'.$key]['response'] = $response;
+        $id = $scope.'/'.$key;
+
+        if (($this->records[$id]['token'] ?? null) !== $token) {
+            return false;
+        }
+
+        $this->records[$id]['response'] = $response;
+
+        return true;
     }
 
-    public function release(string $scope, string $key): void
+    public function release(string $scope, string $key, string $token): void
     {
-        unset($this->records[$scope.'/'.$key]);
-        $this->released[] = $scope.'/'.$key;
+        $id = $scope.'/'.$key;
+
+        if (($this->records[$id]['token'] ?? null) !== $token) {
+            return;
+        }
+
+        unset($this->records[$id]);
+        $this->released[] = $id;
+    }
+
+    /**
+     * Hands the claim to another attempt, as the real store does with a claim
+     * that stood unanswered past its grace: the attempt that held it keeps its
+     * token, which now names nothing.
+     */
+    public function takeOver(string $scope, string $key): void
+    {
+        $this->records[$scope.'/'.$key]['token'] = 'token-of-the-retry';
     }
 }

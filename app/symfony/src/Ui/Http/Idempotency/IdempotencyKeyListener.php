@@ -7,10 +7,14 @@ namespace App\Ui\Http\Idempotency;
 use App\Shared\Application\Clock\Clock;
 use App\Ui\Http\Exception\HttpProblem;
 use App\Ui\Http\RequestActor;
+use App\Ui\Http\Response\ApiProblem;
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Event\FinishRequestEvent;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
 use Symfony\Component\HttpKernel\Event\ResponseEvent;
 use Symfony\Component\HttpKernel\KernelEvents;
@@ -28,7 +32,15 @@ use Symfony\Component\HttpKernel\KernelEvents;
  *   - identical request, same key: the stored response is replayed, marked
  *     with Idempotency-Replayed: true;
  *   - different request, same key: 422 - a key names one request only;
- *   - same key while the first request is still running: 409.
+ *   - same key while the first request is still running: 409. A request that
+ *     died without answering looks the same, and is told apart by its age:
+ *     past the store's grace the key is taken over and the retry runs for
+ *     real, rather than being refused until the key's TTL. Should the first
+ *     request turn out to be alive after all and come back, it finds a claim
+ *     that is no longer its own: nothing it wrote is kept - the task and the
+ *     message that would have queued it are rolled back with the answer it
+ *     could not store, since all of it is one unit of work the claim opened
+ *     - and it is told 409.
  *
  * Keys are scoped per caller so two clients cannot collide, and expire after
  * the configured TTL.
@@ -50,6 +62,7 @@ final readonly class IdempotencyKeyListener
         private Clock $clock,
         #[Autowire(param: 'app.idempotency_ttl_seconds')]
         private int $ttlSeconds,
+        private LoggerInterface $logger = new NullLogger(),
     ) {
     }
 
@@ -87,7 +100,16 @@ final readonly class IdempotencyKeyListener
 
         switch ($result->outcome) {
             case ClaimOutcome::CLAIMED:
-                $request->attributes->set(self::ATTRIBUTE, [$scope, $key]);
+                $token = $result->token;
+
+                if (null === $token) {
+                    throw new \LogicException('A claim must carry the token that names it.');
+                }
+
+                // Everything the request writes from here on belongs to the
+                // claim, and commits with its answer or not at all.
+                $this->store->begin($scope, $key, $token);
+                $request->attributes->set(self::ATTRIBUTE, [$scope, $key, $token]);
 
                 return;
 
@@ -119,22 +141,82 @@ final readonly class IdempotencyKeyListener
             return;
         }
 
-        $claim = $event->getRequest()->attributes->get(self::ATTRIBUTE);
+        $claim = self::takeClaim($event->getRequest());
 
-        if (!\is_array($claim) || 2 !== \count($claim) || !\is_string($claim[0]) || !\is_string($claim[1])) {
+        if (null === $claim) {
             return;
         }
 
-        [$scope, $key] = $claim;
+        [$scope, $key, $token] = $claim;
         $response = $event->getResponse();
 
         if (self::isRetryable($response->getStatusCode())) {
-            $this->store->release($scope, $key);
+            $this->store->release($scope, $key, $token);
 
             return;
         }
 
-        $this->store->complete($scope, $key, StoredResponse::fromResponse($response));
+        if ($this->store->complete($scope, $key, $token, StoredResponse::fromResponse($response))) {
+            return;
+        }
+
+        // This request outlived the store's grace and the client's retry took
+        // its key: the client has the retry's answer, or will, and this one
+        // answers nothing it can still ask. The store rolled back everything
+        // the request wrote with the answer it could not store, so the
+        // response that named a task names nothing now - see
+        // DbalIdempotencyStore::IN_PROGRESS_GRACE_SECONDS.
+        $this->logger->warning('Idempotency-Key claim was taken over before this response could be stored; its work was rolled back and the retry that took it answers the client.', [
+            'scope' => $scope,
+            'key' => $key,
+            'status' => $response->getStatusCode(),
+        ]);
+        $event->setResponse(ApiProblem::response(
+            Response::HTTP_CONFLICT,
+            \sprintf('Un reintento con esta %s retomó la clave mientras esta petición seguía en curso; nada de lo que hizo se ha guardado. Repite la petición.', self::HEADER),
+        ));
+    }
+
+    /**
+     * A request that ends without a response - an exception let through with
+     * the kernel told not to catch - has answered nothing, and must not keep
+     * its claim or its unit of work: the key goes back, and the retry runs
+     * for real. Runs after onResponse, which took the claim off the request
+     * when it dealt with it, so this only sees what that one never saw.
+     */
+    #[AsEventListener(event: KernelEvents::FINISH_REQUEST)]
+    public function onFinishRequest(FinishRequestEvent $event): void
+    {
+        if (!$event->isMainRequest()) {
+            return;
+        }
+
+        $claim = self::takeClaim($event->getRequest());
+
+        if (null === $claim) {
+            return;
+        }
+
+        [$scope, $key, $token] = $claim;
+        $this->store->release($scope, $key, $token);
+    }
+
+    /**
+     * The claim the request carries, taken off it so that it is dealt with
+     * once whatever the order the kernel's events arrive in.
+     *
+     * @return array{string, string, string}|null
+     */
+    private static function takeClaim(Request $request): ?array
+    {
+        $claim = $request->attributes->get(self::ATTRIBUTE);
+        $request->attributes->remove(self::ATTRIBUTE);
+
+        if (!\is_array($claim) || 3 !== \count($claim) || !\is_string($claim[0]) || !\is_string($claim[1]) || !\is_string($claim[2])) {
+            return null;
+        }
+
+        return [$claim[0], $claim[1], $claim[2]];
     }
 
     private static function isIdempotentRoute(Request $request): bool

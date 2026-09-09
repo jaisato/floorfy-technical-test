@@ -8,7 +8,10 @@ use App\Shared\Infrastructure\Persistence\Doctrine\Idempotency\DbalIdempotencySt
 use App\Tests\Support\ApiTestCase;
 use App\Ui\Http\Idempotency\IdempotencyKeyListener;
 use App\Ui\Http\Response\ApiProblem;
+use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Event\RequestEvent;
+use Symfony\Component\HttpKernel\KernelEvents;
 
 /**
  * Idempotency-Key end to end: a client that lost the answer to POST /api/tasks
@@ -97,6 +100,30 @@ final class TaskIdempotencyTest extends ApiTestCase
         self::assertSame(1, $this->taskCount());
     }
 
+    /**
+     * A key whose request died without answering - php-fpm stopped it at
+     * max_execution_time, the container was replaced under it - has a row and
+     * no response, exactly like one still running, and is told apart by its
+     * age. Once the grace has passed the retry runs for real, instead of being
+     * told "still running" until the key's TTL a day later.
+     */
+    public function testTheSameKeyAfterTheFirstRequestDiedWithoutAnsweringRunsForReal(): void
+    {
+        $this->create('k-1', self::PAYLOAD);
+        $first = $this->responseBody();
+        $this->connection()->executeStatement(
+            'UPDATE '.DbalIdempotencyStore::TABLE." SET response_status = NULL, response_body = NULL, response_content_type = NULL, created_at = '2000-01-01 00:00:00'",
+        );
+
+        $this->create('k-1', self::PAYLOAD);
+
+        $this->assertStatus(Response::HTTP_CREATED);
+        self::assertNull($this->client->getResponse()->headers->get(IdempotencyKeyListener::REPLAYED_HEADER), 'a fresh answer, not a replay');
+        self::assertNotSame($first['task_id'], $this->responseBody()['task_id']);
+        self::assertSame(2, $this->taskCount());
+        self::assertSame(1, $this->keyCount());
+    }
+
     /** Once the record is past its TTL the key is free and the request runs. */
     public function testAKeyIsUsableAgainOnceItsRecordHasExpired(): void
     {
@@ -136,6 +163,33 @@ final class TaskIdempotencyTest extends ApiTestCase
         $this->assertStatus(Response::HTTP_BAD_REQUEST);
         self::assertSame(0, $this->taskCount());
         self::assertSame(0, $this->keyCount());
+    }
+
+    /**
+     * A request that outlived the store's grace and comes back to a claim a
+     * retry took must not leave a task behind: its own client will never be
+     * told of it, and the retry's already has one. Everything the request
+     * wrote is one unit of work with the storing of its answer, and the answer
+     * cannot be stored, so none of it is kept. The key changes hands here
+     * between the claim and the controller, from a listener slotted between
+     * the two.
+     */
+    public function testARequestWhoseKeyWasTakenOverMidFlightCreatesNoTask(): void
+    {
+        $this->client->disableReboot();
+        $dispatcher = self::getContainer()->get('event_dispatcher');
+        self::assertInstanceOf(EventDispatcherInterface::class, $dispatcher);
+        $dispatcher->addListener(KernelEvents::REQUEST, function (RequestEvent $event): void {
+            if ($event->isMainRequest()) {
+                $this->connection()->executeStatement('UPDATE '.DbalIdempotencyStore::TABLE." SET claim_token = 'the-retry'");
+            }
+        }, 3);
+
+        $this->create('k-1', self::PAYLOAD);
+
+        $this->assertStatus(Response::HTTP_CONFLICT);
+        self::assertSame(ApiProblem::CONTENT_TYPE, $this->client->getResponse()->headers->get('Content-Type'));
+        self::assertSame(0, $this->taskCount(), 'the task was rolled back with the answer nobody could store');
     }
 
     /** The header only means something where the API says it does. */

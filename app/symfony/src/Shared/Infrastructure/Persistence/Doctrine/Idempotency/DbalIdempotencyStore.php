@@ -19,37 +19,93 @@ use Doctrine\DBAL\Types\Types;
  * The primary key (scope, idempotency_key) is what makes a claim atomic: two
  * concurrent requests with the same key race on the INSERT and exactly one
  * wins, on MySQL and SQLite alike. There is no read-then-write anywhere.
+ *
+ * Each claim also writes a token naming that attempt, and the writes that end
+ * it carry the token back. (scope, key) names the row; it does not say that
+ * the row is still the one that was claimed. A claim that stood unanswered
+ * past the grace is taken over by the client's retry, and the request that
+ * abandoned it may not be dead - see IN_PROGRESS_GRACE_SECONDS - so without
+ * the token its late complete() stored its answer over the retry's, to be
+ * replayed to that client as the answer to a request it never made, and its
+ * release() deleted a claim that was being worked on.
+ *
+ * And the claim's completion is the last write of the request's own unit of
+ * work, on the same connection: begin() opens a transaction the controller's
+ * changes nest inside (DBAL nests with savepoints), complete() commits it
+ * when the token still matches and rolls it back when it does not. That is
+ * what keeps a request that came back too late from leaving a task behind
+ * that nobody was told about: the task and the message that queues it go
+ * with the answer that could not be stored.
  */
-final readonly class DbalIdempotencyStore implements IdempotencyStore
+final class DbalIdempotencyStore implements IdempotencyStore
 {
     public const string TABLE = 'idempotency_keys';
 
-    public function __construct(private Connection $db)
-    {
+    /**
+     * How long a claim may stand with no response before it is read as the
+     * leftover of a request that never answered, and taken over.
+     *
+     * A claim is released by the response that ends its request, and a request
+     * that never ends - stopped by php-fpm at max_execution_time, out of
+     * memory, the container replaced under it - releases nothing. Left there,
+     * the row stood until its TTL, a day by default, and the client that
+     * followed the protocol and repeated its request was told 409 "still
+     * running" for the whole of that day, for a task that was never created.
+     * Nothing here runs anything like this long: php-fpm stops a request at
+     * max_execution_time (60 s in the image) and nginx stops waiting at 30 s,
+     * so a claim this old with nothing stored is not a request still answering
+     * anybody.
+     *
+     * Not answering anybody is not the same as dead. max_execution_time counts
+     * CPU time on Linux, not a wait, so a request blocked in a system call - a
+     * resolver that does not answer, a database that does not - is still there
+     * long after nginx gave up on it, and PHP only notices the client has gone
+     * when it writes to it, which the controller does at the very end. Such a
+     * request comes back to a claim that is no longer its own: its answer is
+     * not stored, its release releases nothing, and the task it went on to
+     * create is rolled back with everything else it wrote, because the
+     * storing of the answer is the last write of that same transaction. What
+     * remains is the exposure every idempotency scheme has past its lock: a
+     * request that did its work, committed, and died in the moment before the
+     * response could be stored - which the design closes too, since the two
+     * are one commit. The alternative was a day of "still running" for a task
+     * that, far more often, was never created at all.
+     */
+    public const int IN_PROGRESS_GRACE_SECONDS = 300;
+
+    /**
+     * The tokens whose unit of work this store opened and has not closed.
+     *
+     * @var array<string, true>
+     */
+    private array $held = [];
+
+    public function __construct(
+        private readonly Connection $db,
+        private readonly int $inProgressGraceSeconds = self::IN_PROGRESS_GRACE_SECONDS,
+    ) {
     }
 
     public function claim(string $scope, string $key, string $fingerprint, DateTimeValue $now, int $ttlSeconds): ClaimResult
     {
         $this->purgeExpired($now);
+        $token = bin2hex(random_bytes(16));
 
-        try {
-            $this->db->insert(self::TABLE, [
-                'scope' => $scope,
-                'idempotency_key' => $key,
-                'fingerprint' => $fingerprint,
-                'created_at' => $now->toDateTimeImmutable(),
-                'expires_at' => $now->minusSeconds(-$ttlSeconds)->toDateTimeImmutable(),
-            ], [
-                'scope' => ParameterType::STRING,
-                'idempotency_key' => ParameterType::STRING,
-                'fingerprint' => ParameterType::STRING,
-                'created_at' => Types::DATETIME_IMMUTABLE,
-                'expires_at' => Types::DATETIME_IMMUTABLE,
-            ]);
+        if ($this->insert($scope, $key, $fingerprint, $token, $now, $ttlSeconds)) {
+            return ClaimResult::claimed($token);
+        }
 
-            return ClaimResult::claimed();
-        } catch (UniqueConstraintViolationException) {
-            // Somebody - most likely this same client, a moment ago - holds the key.
+        // Somebody - most likely this same client, a moment ago - holds the key.
+        // A claim nobody answered within the grace is taken over: by this
+        // request, or by whichever concurrent retry of the same lost request
+        // gets its UPDATE in first - one row changes once, so two retries
+        // cannot both believe they took it. Under a new token, so the attempt
+        // that abandoned it can no longer answer for it or release it, and
+        // with the clock restarted: a take-over is a claim of its own, in
+        // flight from this moment, and the next retry inside the grace is
+        // told "still running" like any other.
+        if ($this->takeOver($scope, $key, $fingerprint, $token, $now, $ttlSeconds)) {
+            return ClaimResult::claimed($token);
         }
 
         $row = $this->db->fetchAssociative(
@@ -70,6 +126,8 @@ final readonly class DbalIdempotencyStore implements IdempotencyStore
         $status = $row['response_status'];
 
         if (!\is_int($status) && !(\is_string($status) && 1 === preg_match('/^\d+$/', $status))) {
+            // No response yet, and not old enough to take over: the request
+            // is running, or a retry took the key a moment ago and is.
             return ClaimResult::inProgress();
         }
 
@@ -80,18 +138,41 @@ final readonly class DbalIdempotencyStore implements IdempotencyStore
         ));
     }
 
-    public function complete(string $scope, string $key, StoredResponse $response): void
+    public function begin(string $scope, string $key, string $token): void
     {
-        $this->db->update(self::TABLE, [
+        $this->db->beginTransaction();
+        $this->held[$token] = true;
+    }
+
+    public function complete(string $scope, string $key, string $token, StoredResponse $response): bool
+    {
+        $stored = 1 === (int) $this->db->update(self::TABLE, [
             'response_status' => $response->status,
             'response_content_type' => $response->contentType,
             'response_body' => $response->body,
-        ], ['scope' => $scope, 'idempotency_key' => $key]);
+        ], ['scope' => $scope, 'idempotency_key' => $key, 'claim_token' => $token]);
+
+        if ($this->closes($token)) {
+            // The last write of the unit of work, and the one that decides it:
+            // the claim is still this attempt's and everything the request did
+            // is kept, or it is not and none of it is.
+            if ($stored) {
+                $this->db->commit();
+            } else {
+                $this->db->rollBack();
+            }
+        }
+
+        return $stored;
     }
 
-    public function release(string $scope, string $key): void
+    public function release(string $scope, string $key, string $token): void
     {
-        $this->db->delete(self::TABLE, ['scope' => $scope, 'idempotency_key' => $key]);
+        if ($this->closes($token)) {
+            $this->db->rollBack();
+        }
+
+        $this->db->delete(self::TABLE, ['scope' => $scope, 'idempotency_key' => $key, 'claim_token' => $token]);
     }
 
     /**
@@ -106,6 +187,90 @@ final readonly class DbalIdempotencyStore implements IdempotencyStore
             \sprintf('DELETE FROM %s WHERE expires_at <= :now', self::TABLE),
             ['now' => $now->toDateTimeImmutable()],
             ['now' => Types::DATETIME_IMMUTABLE],
+        );
+    }
+
+    /**
+     * Whether a unit of work begin() opened for the token is still open, and
+     * forgets it either way: it is closed by the call that asked.
+     */
+    private function closes(string $token): bool
+    {
+        if (!isset($this->held[$token])) {
+            return false;
+        }
+
+        unset($this->held[$token]);
+
+        return $this->db->isTransactionActive();
+    }
+
+    /**
+     * The claim itself: one INSERT, decided by the primary key.
+     */
+    private function insert(string $scope, string $key, string $fingerprint, string $token, DateTimeValue $now, int $ttlSeconds): bool
+    {
+        try {
+            $this->db->insert(self::TABLE, [
+                'scope' => $scope,
+                'idempotency_key' => $key,
+                'fingerprint' => $fingerprint,
+                'claim_token' => $token,
+                'created_at' => $now->toDateTimeImmutable(),
+                'expires_at' => $now->minusSeconds(-$ttlSeconds)->toDateTimeImmutable(),
+            ], [
+                'scope' => ParameterType::STRING,
+                'idempotency_key' => ParameterType::STRING,
+                'fingerprint' => ParameterType::STRING,
+                'claim_token' => ParameterType::STRING,
+                'created_at' => Types::DATETIME_IMMUTABLE,
+                'expires_at' => Types::DATETIME_IMMUTABLE,
+            ]);
+        } catch (UniqueConstraintViolationException) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Takes over a claim that has stood without a response for longer than the
+     * grace, and says whether it did.
+     *
+     * Conditional on the row still being that claim - this request's own
+     * fingerprint, no response, older than the grace - so a request that
+     * answers in the meantime keeps its record, another request under the
+     * same key is still a mismatch, and two retries of the same dead request
+     * cannot both take it: one UPDATE changes the row, and the other reads
+     * the row it left, which is a claim inside its grace.
+     */
+    private function takeOver(string $scope, string $key, string $fingerprint, string $token, DateTimeValue $now, int $ttlSeconds): bool
+    {
+        return 1 === $this->db->executeStatement(
+            \sprintf(
+                'UPDATE %s SET claim_token = :token, created_at = :now, expires_at = :expires'
+                .' WHERE scope = :scope AND idempotency_key = :key AND fingerprint = :fingerprint'
+                .' AND response_status IS NULL AND created_at <= :stale',
+                self::TABLE,
+            ),
+            [
+                'token' => $token,
+                'now' => $now->toDateTimeImmutable(),
+                'expires' => $now->minusSeconds(-$ttlSeconds)->toDateTimeImmutable(),
+                'scope' => $scope,
+                'key' => $key,
+                'fingerprint' => $fingerprint,
+                'stale' => $now->minusSeconds($this->inProgressGraceSeconds)->toDateTimeImmutable(),
+            ],
+            [
+                'token' => ParameterType::STRING,
+                'now' => Types::DATETIME_IMMUTABLE,
+                'expires' => Types::DATETIME_IMMUTABLE,
+                'scope' => ParameterType::STRING,
+                'key' => ParameterType::STRING,
+                'fingerprint' => ParameterType::STRING,
+                'stale' => Types::DATETIME_IMMUTABLE,
+            ],
         );
     }
 }

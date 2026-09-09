@@ -41,6 +41,15 @@ class IdempotencyKeyEntity
     #[ORM\Column(type: Types::STRING, length: 64)]
     public string $fingerprint;
 
+    /**
+     * Names the attempt that holds the claim. The writes that end a request
+     * carry it back, so one that outlived the grace and was taken over can
+     * neither store its answer over the retry's nor release the retry's claim.
+     * Empty only for rows that predate the column.
+     */
+    #[ORM\Column(name: 'claim_token', type: Types::STRING, length: 32, options: ['default' => ''])]
+    public string $claimToken = '';
+
     /** Null while the original request is still running. */
     #[ORM\Column(name: 'response_status', type: Types::SMALLINT, nullable: true)]
     public ?int $responseStatus = null;
