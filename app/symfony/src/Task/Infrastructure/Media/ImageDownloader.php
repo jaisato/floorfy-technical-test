@@ -17,6 +17,15 @@ final readonly class ImageDownloader implements ImageFetcher
     private const int CONNECT_TIMEOUT_SECONDS = 30;
 
     /**
+     * The statuses that always carry a Location a GET can follow, so one
+     * without it is an error. 300 is followed only when it names a preferred
+     * choice in Location (RFC 9110 section 15.4.1) and is otherwise an answer
+     * in its own right; 304 never carries one. Treating the whole 3xx range as
+     * a redirect turned those two into a bogus "missing Location" error.
+     */
+    private const array REDIRECT_STATUSES = [301, 302, 303, 307, 308];
+
+    /**
      * Wall-clock budget for the whole download, redirects and address retries
      * included. Handing each attempt its own budget let one task hold a worker
      * for addresses x redirects x budget.
@@ -57,14 +66,24 @@ final readonly class ImageDownloader implements ImageFetcher
 
             $status = $response->getStatusCode();
 
-            if ($status >= 300 && $status < 400) {
-                $location = $response->getHeaders(false)['location'][0] ?? null;
+            $location = self::locationOf($response);
 
+            if (self::isRedirect($status, $location)) {
                 if (null === $location) {
                     throw new \RuntimeException('Redirección sin cabecera Location al descargar la imagen.');
                 }
 
-                $url = $this->resolveLocation($url, $location);
+                $next = $this->resolveLocation($url, $location);
+
+                // A Location that resolves back to the current URL (a lone
+                // fragment, "?" with the same query) would otherwise re-issue
+                // the identical request until the hop limit ran out: six
+                // requests and a DNS lookup each, for one submitted URL.
+                if ($next === $url) {
+                    throw new \RuntimeException('La redirección apunta a la misma URL; se descarta para no repetirla.');
+                }
+
+                $url = $next;
                 continue;
             }
 
@@ -99,6 +118,27 @@ final readonly class ImageDownloader implements ImageFetcher
     }
 
     /**
+     * The Location header, or null when it is absent or blank: a blank one is
+     * no Location, and resolved as a reference it named the current URL and
+     * re-requested it until the hop limit.
+     */
+    private static function locationOf(ResponseInterface $response): ?string
+    {
+        $location = $response->getHeaders(false)['location'][0] ?? null;
+
+        if (null === $location || '' === trim($location)) {
+            return null;
+        }
+
+        return $location;
+    }
+
+    private static function isRedirect(int $status, ?string $location): bool
+    {
+        return \in_array($status, self::REDIRECT_STATUSES, true) || (300 === $status && null !== $location);
+    }
+
+    /**
      * Issues the request against one of the addresses the guard approved.
      *
      * Pinning matters: handing the client the hostname would let it perform its
@@ -128,8 +168,18 @@ final readonly class ImageDownloader implements ImageFetcher
         $lastError = null;
 
         foreach ($ips as $ip) {
+            // Outside the try below: an exhausted budget is a plain
+            // RuntimeException the transport catch would not hold, and letting
+            // it escape from inside discarded the real transport error the
+            // earlier addresses had produced.
             try {
-                $options = $this->budgetedOptions($deadline) + ['resolve' => [$host => $ip]];
+                $budgeted = $this->budgetedOptions($deadline);
+            } catch (\RuntimeException $e) {
+                throw $lastError ?? $e;
+            }
+
+            try {
+                $options = $budgeted + ['resolve' => [$host => $ip]];
                 $response = $this->httpClient->request('GET', $url, $options);
 
                 // Force the transport to connect now, so an unreachable address
@@ -159,6 +209,14 @@ final readonly class ImageDownloader implements ImageFetcher
             'max_redirects' => 0,
             'timeout' => min(self::CONNECT_TIMEOUT_SECONDS, $remaining),
             'max_duration' => $remaining,
+            // Without this the client honours http_proxy / HTTP_PROXY /
+            // all_proxy from the environment, and a proxy resolves the hostname
+            // itself: the `resolve` pin is silently discarded and the address
+            // the guard validated is not the one contacted. That is the DNS
+            // rebinding hole the pin exists to close, reopened by an environment
+            // variable. Passing 'proxy' => null does not disable it; only
+            // no_proxy does.
+            'no_proxy' => '*',
         ];
     }
 
@@ -225,10 +283,21 @@ final readonly class ImageDownloader implements ImageFetcher
         throw BlockedUrl::notAnImage(\is_string($mediaType) ? $mediaType : '');
     }
 
-    /** @return int bytes written */
+    /**
+     * @return int bytes written
+     *
+     * Written to a unique temporary file and renamed into place. The transport
+     * retries a task and the handler re-enters one that is not finished, so two
+     * runs can be handed the same name; writing straight to the final path let
+     * one truncate or interleave with the other's file, and a killed process
+     * left a half-written image where a reader expects a complete one. rename()
+     * is atomic within a filesystem: a reader sees the previous file or a whole
+     * new one, never something in between.
+     */
     private function streamToFile(ResponseInterface $response, string $destination): int
     {
-        $handle = fopen($destination, 'w');
+        $temporary = $destination.'.'.bin2hex(random_bytes(8)).'.part';
+        $handle = fopen($temporary, 'w');
 
         if (false === $handle) {
             throw new \RuntimeException('No se pudo escribir la imagen en disco: '.$destination);
@@ -255,14 +324,27 @@ final readonly class ImageDownloader implements ImageFetcher
                 // returning a truncated image as a successful download.
                 self::writeAll($handle, $content);
             }
+
+            // Inside the try: a deferred write error can surface at close time
+            // on a network filesystem, and closing outside meant that failure
+            // went unnoticed and skipped the cleanup below.
+            if (!fclose($handle)) {
+                throw new \RuntimeException('No se pudo cerrar el fichero de imagen: '.$destination);
+            }
         } catch (\Throwable $e) {
-            fclose($handle);
-            @unlink($destination);
+            if (\is_resource($handle)) {
+                fclose($handle);
+            }
+            @unlink($temporary);
 
             throw $e;
         }
 
-        fclose($handle);
+        if (!rename($temporary, $destination)) {
+            @unlink($temporary);
+
+            throw new \RuntimeException('No se pudo mover la imagen descargada a su destino: '.$destination);
+        }
 
         return $written;
     }
@@ -355,8 +437,10 @@ final readonly class ImageDownloader implements ImageFetcher
             return $currentUrl;
         }
 
-        // Absolute URL.
-        if (null !== parse_url($location, \PHP_URL_SCHEME)) {
+        // Absolute URL. parse_url() answers false, not null, for a malformed
+        // reference such as "///x", and a `!== null` test sent those down this
+        // branch to fail one hop later with a misleading message.
+        if (\is_string(parse_url($location, \PHP_URL_SCHEME))) {
             return $location;
         }
 

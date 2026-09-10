@@ -1,0 +1,46 @@
+name: Dependency audit
+
+# Known advisories against what composer.lock pins. Runs with every push and
+# pull request like the rest of CI, and once a week on its own: an advisory
+# published against a version the lock already carries arrives without a
+# commit, and only a scheduled run turns red for it.
+#
+# GitHub switches scheduled workflows off in a repository with no commit for
+# 60 days and emails the owner; the Actions tab turns it back on.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  schedule:
+    - cron: '17 6 * * 1' # Mondays, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: app/symfony
+
+jobs:
+  composer:
+    name: composer audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+          tools: composer:v2
+
+      # --locked reads composer.lock and installs nothing. An abandoned package
+      # is reported, not failed on: it is a maintenance signal, not an advisory.
+      - name: Audit the locked dependencies
+        run: composer audit --locked --abandoned=report

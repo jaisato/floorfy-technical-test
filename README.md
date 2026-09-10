@@ -729,6 +729,12 @@ Composer:
   (incluidos los grupos `mysql` y `ffmpeg`) con cobertura pcov y un mínimo del
   80 % de líneas.
 
+`.github/workflows/audit.yml` ejecuta `composer audit --locked` en cada push y pull
+request y, además, cada lunes por programación: un aviso publicado contra una
+versión que `composer.lock` ya fija llega sin ningún commit, y sólo una ejecución
+programada lo pone en rojo. GitHub desactiva los workflows programados tras 60 días
+sin commits y avisa por correo; se reactivan desde la pestaña Actions.
+
 ---
 
 ## Operación
