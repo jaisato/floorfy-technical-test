@@ -52,6 +52,67 @@ final class ImageDownloaderTest extends TestCase
         self::assertFileExists($file);
         self::assertStringStartsWith($this->work->path.'/images/', $file);
         self::assertSame('image/png', mime_content_type($file));
+        // Written through a temporary file and renamed into place; nothing of
+        // that must be left next to the image.
+        self::assertSame([$file], glob($this->work->path.'/images/task/*') ?: []);
+    }
+
+    /**
+     * A proxy named in the environment (http_proxy, all_proxy) is handed the
+     * hostname and resolves it itself, so the address the guard validated is
+     * not the one contacted: DNS rebinding straight past the pin, one
+     * environment variable away from any deployment. The client is told to
+     * bypass every proxy, whatever the environment says.
+     */
+    public function testAProxyInTheEnvironmentDoesNotComeBetweenTheGuardAndTheConnection(): void
+    {
+        $saved = $_SERVER;
+        // Nothing listens on port 1: a client that honoured the proxy could
+        // not connect at all.
+        $_SERVER['http_proxy'] = 'http://127.0.0.1:1';
+        unset($_SERVER['no_proxy'], $_SERVER['NO_PROXY']);
+
+        try {
+            $file = $this->downloader()->fetch(self::server()->url('/image.png'), 'task/partial');
+
+            self::assertSame('image/png', mime_content_type($file));
+        } finally {
+            $_SERVER = $saved;
+        }
+    }
+
+    /**
+     * 300 and 304 carry no Location a GET could follow; treating the whole 3xx
+     * range as a redirect turned them into a bogus "missing Location" error.
+     */
+    public function testANotModifiedIsReportedWithItsStatusRatherThanAsAMissingLocation(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/HTTP 304/');
+
+        $this->downloader()->fetch(self::server()->url('/redirect/not-modified'), 'task/partial');
+    }
+
+    /** A blank Location is no Location; resolving it re-requested the same URL. */
+    public function testARedirectWithABlankLocationIsAnError(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/sin cabecera Location/');
+
+        $this->downloader()->fetch(self::server()->url('/redirect/empty-location'), 'task/partial');
+    }
+
+    /**
+     * A Location that resolves back to the current URL would re-issue the
+     * identical request until the hop limit ran out: six requests and a DNS
+     * lookup each, for one submitted URL.
+     */
+    public function testARedirectBackToTheSameUrlIsRefusedAtOnce(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/misma URL/');
+
+        $this->downloader()->fetch(self::server()->url('/redirect/self'), 'task/partial');
     }
 
     /**

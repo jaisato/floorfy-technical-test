@@ -124,11 +124,31 @@ switch ($path) {
         break;
 
     case '/redirect/loop':
+        // Two URLs pointing at each other: a redirect straight back to the
+        // same URL is refused on the spot (see /redirect/self), so a loop that
+        // has to be caught by the hop limit needs at least two hops.
+        $redirect('/redirect/loop-back');
+        break;
+
+    case '/redirect/loop-back':
         $redirect('/redirect/loop');
+        break;
+
+    case '/redirect/self':
+        $redirect('/redirect/self');
         break;
 
     case '/redirect/no-location':
         http_response_code(302);
+        break;
+
+    case '/redirect/empty-location':
+        $redirect('   ');
+        break;
+
+    case '/redirect/not-modified':
+        // 304 never carries a Location: it is not a redirect for a GET.
+        http_response_code(304);
         break;
 
     case '/server-error':

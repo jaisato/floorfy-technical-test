@@ -104,10 +104,17 @@ final readonly class PublicUrlGuard
             // dns_get_record() does not consult /etc/hosts, so names resolved
             // locally (starting with "localhost") never reach the range check
             // without this fallback.
-            $resolved = gethostbyname($host);
+            //
+            // gethostbynamel(), not gethostbyname(): the singular form returns
+            // only the first record, and the contract above is that *every*
+            // address the name resolves to has been checked. Vetting one while
+            // the client may reach another is the same hole as not checking.
+            $resolved = gethostbynamel($host);
 
-            if ($resolved !== $host) {
-                $ips[] = $resolved;
+            foreach (\is_array($resolved) ? $resolved : [] as $address) {
+                if ($address !== $host) {
+                    $ips[] = $address;
+                }
             }
         }
 
