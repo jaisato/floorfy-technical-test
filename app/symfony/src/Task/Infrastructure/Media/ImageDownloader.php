@@ -17,9 +17,11 @@ final readonly class ImageDownloader implements ImageFetcher
     private const int CONNECT_TIMEOUT_SECONDS = 30;
 
     /**
-     * The statuses that carry a Location a GET can follow. 300 may omit it and
-     * 304 never has one, so treating the whole 3xx range as a redirect turned
-     * those two into a bogus "missing Location" error.
+     * The statuses that always carry a Location a GET can follow, so one
+     * without it is an error. 300 is followed only when it names a preferred
+     * choice in Location (RFC 9110 section 15.4.1) and is otherwise an answer
+     * in its own right; 304 never carries one. Treating the whole 3xx range as
+     * a redirect turned those two into a bogus "missing Location" error.
      */
     private const array REDIRECT_STATUSES = [301, 302, 303, 307, 308];
 
@@ -64,12 +66,10 @@ final readonly class ImageDownloader implements ImageFetcher
 
             $status = $response->getStatusCode();
 
-            if (\in_array($status, self::REDIRECT_STATUSES, true)) {
-                $location = $response->getHeaders(false)['location'][0] ?? null;
+            $location = self::locationOf($response);
 
-                // A blank Location is no Location: resolved as a reference, it
-                // named the current URL and re-requested it until the hop limit.
-                if (null === $location || '' === trim($location)) {
+            if (self::isRedirect($status, $location)) {
+                if (null === $location) {
                     throw new \RuntimeException('Redirección sin cabecera Location al descargar la imagen.');
                 }
 
@@ -115,6 +115,27 @@ final readonly class ImageDownloader implements ImageFetcher
         }
 
         throw BlockedUrl::tooManyRedirects($imageUrl);
+    }
+
+    /**
+     * The Location header, or null when it is absent or blank: a blank one is
+     * no Location, and resolved as a reference it named the current URL and
+     * re-requested it until the hop limit.
+     */
+    private static function locationOf(ResponseInterface $response): ?string
+    {
+        $location = $response->getHeaders(false)['location'][0] ?? null;
+
+        if (null === $location || '' === trim($location)) {
+            return null;
+        }
+
+        return $location;
+    }
+
+    private static function isRedirect(int $status, ?string $location): bool
+    {
+        return \in_array($status, self::REDIRECT_STATUSES, true) || (300 === $status && null !== $location);
     }
 
     /**

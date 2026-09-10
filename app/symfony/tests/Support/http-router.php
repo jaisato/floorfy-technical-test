@@ -151,6 +151,17 @@ switch ($path) {
         http_response_code(304);
         break;
 
+    case '/redirect/multiple-choices':
+        // 300 with a preferred choice in Location: followed.
+        $redirect('/image.png', 300);
+        break;
+
+    case '/redirect/multiple-choices-without-location':
+        // 300 is allowed to omit Location; then it is an answer, not a redirect.
+        http_response_code(300);
+        echo 'pick one';
+        break;
+
     case '/server-error':
         http_response_code(500);
         echo 'boom';

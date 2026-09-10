@@ -82,8 +82,8 @@ final class ImageDownloaderTest extends TestCase
     }
 
     /**
-     * 300 and 304 carry no Location a GET could follow; treating the whole 3xx
-     * range as a redirect turned them into a bogus "missing Location" error.
+     * 304 carries no Location a GET could follow; treating the whole 3xx range
+     * as a redirect turned it into a bogus "missing Location" error.
      */
     public function testANotModifiedIsReportedWithItsStatusRatherThanAsAMissingLocation(): void
     {
@@ -91,6 +91,25 @@ final class ImageDownloaderTest extends TestCase
         $this->expectExceptionMessageMatches('/HTTP 304/');
 
         $this->downloader()->fetch(self::server()->url('/redirect/not-modified'), 'task/partial');
+    }
+
+    /**
+     * 300 may name a preferred choice in Location, and a client may follow it
+     * (RFC 9110 section 15.4.1); without one it is an answer in its own right.
+     */
+    public function testAMultipleChoicesWithAPreferredLocationIsFollowed(): void
+    {
+        $file = $this->downloader()->fetch(self::server()->url('/redirect/multiple-choices'), 'task/partial');
+
+        self::assertSame('image/png', mime_content_type($file));
+    }
+
+    public function testAMultipleChoicesWithoutALocationIsReportedWithItsStatus(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/HTTP 300/');
+
+        $this->downloader()->fetch(self::server()->url('/redirect/multiple-choices-without-location'), 'task/partial');
     }
 
     /** A blank Location is no Location; resolving it re-requested the same URL. */
