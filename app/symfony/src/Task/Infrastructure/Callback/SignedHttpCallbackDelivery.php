@@ -83,6 +83,9 @@ final readonly class SignedHttpCallbackDelivery implements CallbackDelivery
                 ),
             ],
             'body' => $body,
+            // A proxy resolves the hostname itself and can bypass the validated
+            // address pin. Keep callbacks direct, as ImageDownloader does.
+            'no_proxy' => '*',
             'max_redirects' => 0,
             'timeout' => $this->timeoutSeconds,
             'max_duration' => $this->timeoutSeconds,
