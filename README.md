@@ -98,6 +98,12 @@ cp .env.example .env    # y edita lo que necesites
 | RabbitMQ (gestión) | `15672` | `http://localhost:15672` (app / app) |
 | RabbitMQ (AMQP) | — | no se publica: sólo lo usan php y worker |
 
+Los tres puertos se publican en `127.0.0.1`: el stack sólo se ve desde la propia máquina,
+y ni MySQL ni la consola de RabbitMQ quedan a la escucha en la red local con sus
+credenciales de desarrollo. Para llegar desde otro equipo, `BIND_ADDRESS=0.0.0.0` (en
+`.env` o en la shell). nginx añade además `X-Content-Type-Options: nosniff` y
+`X-Frame-Options: DENY` a cada respuesta.
+
 La aplicación **nunca** se conecta a MySQL como `root`: usa el usuario `app`, y la
 contraseña de root se genera aleatoriamente en el primer arranque.
 
