@@ -4,6 +4,10 @@
 # The php, worker and migrate services share one image built from ./app, which
 # contains the application code and its production dependencies. Rebuild after
 # changing code: `docker compose up -d --build` (or `make build`).
+#
+# Every published port binds to BIND_ADDRESS, 127.0.0.1 by default: the stack is
+# reachable from this machine only. BIND_ADDRESS=0.0.0.0 (in .env or the shell)
+# opens it to other machines on the network.
 
 x-app-environment: &app-environment
   APP_ENV: prod
@@ -61,7 +65,7 @@ services:
     image: nginx:1.27-alpine
     restart: unless-stopped
     ports:
-      - "${HTTP_PORT:-8080}:80"
+      - "${BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}:80"
     volumes:
       - ./app/docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
       # Only the public directory is exposed to the web server; the same path
@@ -189,7 +193,7 @@ services:
       MYSQL_RANDOM_ROOT_PASSWORD: "yes"
     ports:
       # Host access for inspection only (e.g. `mysql -h 127.0.0.1 -P 3307 -u app -p`).
-      - "${MYSQL_PORT:-3307}:3306"
+      - "${BIND_ADDRESS:-127.0.0.1}:${MYSQL_PORT:-3307}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
@@ -209,7 +213,7 @@ services:
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-app_dev_password}
     ports:
       # Management UI only; AMQP stays on the compose network.
-      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+      - "${BIND_ADDRESS:-127.0.0.1}:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
