@@ -10,6 +10,7 @@ use App\Task\Infrastructure\Callback\SignedHttpCallbackDelivery;
 use App\Task\Infrastructure\Media\PublicUrlGuard;
 use App\Tests\Support\LocalHttpServer;
 use App\Tests\Support\LoopbackTargetPolicy;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpClient\HttpClient;
 
@@ -79,6 +80,35 @@ final class SignedHttpCallbackDeliveryTest extends TestCase
             $received['headers']['x-task-signature'],
         );
         self::assertSame($body, json_decode($received['body'], true, 512, \JSON_THROW_ON_ERROR));
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function callbackHosts(): iterable
+    {
+        yield 'literal address' => ['127.0.0.1'];
+        yield 'resolved hostname' => ['localhost'];
+    }
+
+    #[DataProvider('callbackHosts')]
+    public function testAProxyCannotReplaceTheValidatedCallbackConnection(string $host): void
+    {
+        $saved = $_SERVER;
+        $_SERVER['http_proxy'] = 'http://127.0.0.1:1';
+        unset($_SERVER['no_proxy'], $_SERVER['NO_PROXY']);
+
+        try {
+            $id = $this->recordingId();
+            $url = str_replace('127.0.0.1', $host, self::server()->url('/hook/record?id='.$id));
+            $body = ['status' => 'completed'];
+
+            $this->delivery()->deliver(new CallbackRequest($url, 'x', 'completed', 1, $body));
+
+            $received = $this->recorded($id);
+            self::assertSame('POST', $received['method']);
+            self::assertSame($body, json_decode($received['body'], true, 512, \JSON_THROW_ON_ERROR));
+        } finally {
+            $_SERVER = $saved;
+        }
     }
 
     /**
