@@ -10,8 +10,59 @@ La ejecución pesada (descarga de imágenes + FFmpeg) se hace en segundo plano c
 
 ---
 
+## Entrega de la prueba técnica
+
+La versión entregada a Floorfy, y la que se evaluó, es la etiqueta [`entrega-2026-01-11`](https://github.com/jaisato/floorfy-technical-test/tree/entrega-2026-01-11)
+(commit `1def015`). Todo lo que llegó a `master` después **no formó parte de la
+entrega evaluada**; el resto de este README describe el estado actual de `master`.
+Cambios desde la entrega: [`entrega-2026-01-11...master`](https://github.com/jaisato/floorfy-technical-test/compare/entrega-2026-01-11...master).
+
+**Qué pedía la prueba.** El enunciado no está en el repositorio. Según el
+[README entregado](https://github.com/jaisato/floorfy-technical-test/blob/entrega-2026-01-11/README.md), el alcance era:
+
+- Una API REST para crear tareas a partir de una lista de imágenes, cada una con
+  una URL pública y una transición (el README cita `zoom_in`, `zoom_out` y `pan`).
+- Un vídeo parcial por imagen, con su transición, y otro final que los concatene.
+- La parte pesada (descarga de imágenes y FFmpeg), en segundo plano.
+- Consultar el estado de la tarea y de cada parcial, y la URL del vídeo final.
+
+**Qué entregué** (81 ficheros en la etiqueta):
+
+- Symfony 7.4 (PHP 8.4), MySQL 8 y Doctrine, Messenger sobre RabbitMQ y FFmpeg,
+  todo en Docker Compose; las migraciones se lanzaban a mano tras arrancar.
+- Código por contextos (`Task`, `Shared`, `Composition`, `Ui`) y capas de dominio,
+  aplicación e infraestructura, con buses de comandos y de consultas.
+- La API: `POST /api/tasks`, `GET /api/tasks/{id}` y `GET /api/tasks/{id}/final`.
+- Un worker que descarga cada imagen, la anima con FFmpeg (`zoompan`) y concatena
+  los clips; `FfmpegImageAnimator` lleva el comentario «Stub de Google VEO».
+- Sin tests automatizados (sólo `tests/bootstrap.php`) ni CI. El compose tenía
+  variables de GCP/Veo y montaba `secrets/gcp-sa.json`, fichero no versionado.
+
+**Qué se añadió después** (84 commits, PRs #5 a #12, de 2026-08-09 a 2026-09-19):
+
+- **SSRF.** Las URLs de imagen y de callback sólo pueden resolver a direcciones
+  públicas por los puertos 80/443; cada redirección se revalida y la conexión se
+  fija a la IP comprobada. La concatenación ya sólo usa clips locales.
+- **Procesamiento.** Reclamación con `UPDATE` condicional y reserva con plazo
+  (`TASK_LEASE_SECONDS`), reintentos que sólo repiten lo pendiente, escritura
+  atómica, número de ejecución y `app:tasks:recover` para mensajes perdidos.
+- **API.** Listado con filtros, progreso, cancelación, reintento, webhook firmado
+  (HMAC), `Idempotency-Key`, opciones de render, errores `problem+json` y OpenAPI;
+  desactivados por defecto: API key, URLs de vídeo firmadas y límite de creación.
+- **Operación.** `/health` y `/health/ready` (también como *healthcheck* de los
+  contenedores), retención de vídeos (`app:videos:prune`) y worker de callbacks.
+- **Docker.** Imagen autocontenida que corre como `www-data` (no root),
+  migraciones al arrancar, puertos sólo en `127.0.0.1`, cabeceras `nosniff`/`DENY`
+  en nginx, y se retiran las dependencias y la configuración de Google Cloud/Veo.
+- **Tests y CI.** Suite PHPUnit, PHPStan nivel 8, PHP-CS-Fixer y Rector; la CI usa
+  MySQL 8, RabbitMQ 3.13 y FFmpeg reales, exige un 80 % de cobertura de líneas y
+  pasa `composer audit` en cada push y cada semana.
+
+---
+
 ## Índice
 
+- [Entrega de la prueba técnica](#entrega-de-la-prueba-técnica)
 - [Stack](#stack)
 - [Arranque rápido](#arranque-rápido)
 - [Servicios y puertos](#servicios-y-puertos)
@@ -34,6 +85,7 @@ La ejecución pesada (descarga de imágenes + FFmpeg) se hace en segundo plano c
 - [Integración continua](#integración-continua)
 - [Operación](#operación)
   - [Retención de vídeos](#retención-de-vídeos)
+  - [Recuperación de mensajes perdidos](#recuperación-de-mensajes-perdidos)
 - [Troubleshooting](#troubleshooting)
 
 ---
